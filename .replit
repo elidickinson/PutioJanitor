@@ -9,7 +9,7 @@ deploymentTarget = "autoscale"
 run = ["sh", "-c", "python put_io_manager.py"]
 
 [workflows]
-runButton = "Project"
+runButton = "Run Manager"
 
 [[workflows.workflow]]
 name = "Project"
@@ -36,6 +36,15 @@ waitForPort = 5000
 [[workflows.workflow]]
 name = "python_run"
 author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python put_io_manager.py --dry-run"
+
+[[workflows.workflow]]
+name = "Run Manager"
+author = 38452143
+mode = "sequential"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
