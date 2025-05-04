@@ -85,9 +85,13 @@ class PutioStorageManager:
                 disk_used = account['disk']['used']
                 disk_avail = account['disk']['avail']
                 
+                # Get trash size if available
+                trash_size = account.get('trash_size', 0)
+                
                 logger.info(f"Total disk space: {self._format_size(disk_size)}")
                 logger.info(f"Used space: {self._format_size(disk_used)}")
                 logger.info(f"Available space: {self._format_size(disk_avail)}")
+                logger.info(f"Trash size: {self._format_size(trash_size)}")
                 return account
             except Exception as e:
                 logger.error(f"Error getting account info (attempt {attempt+1}/{MAX_RETRIES}): {e}")
@@ -96,17 +100,23 @@ class PutioStorageManager:
                 else:
                     raise
 
-    def needs_cleanup(self, account_info) -> bool:
+    def needs_cleanup(self, account_info, trash_size: int = 0) -> bool:
         """
         Check if cleanup is needed based on available space
         
         Args:
             account_info: Account information from get_account_info()
+            trash_size: Size of trash in bytes (optional, will be added to available space)
             
         Returns:
             True if cleanup is needed
         """
-        return account_info['disk']['avail'] < self.threshold_bytes
+        # Calculate effective available space by adding trash size
+        effective_available = account_info['disk']['avail'] + trash_size
+        logger.debug(f"Effective available space: {self._format_size(effective_available)}")
+        
+        # Only need cleanup if effective available space is below threshold
+        return effective_available < self.threshold_bytes
     
     def find_deletable_folders(self) -> None:
         """Find and store IDs of the folders that are allowed to be cleaned up"""
@@ -307,15 +317,24 @@ class PutioStorageManager:
         # Return success only if we've freed enough space
         return freed_space >= needed_space
     
+
+            
     def run(self) -> None:
         """Run the storage manager to check and clean up space if needed"""
         try:
             # Get account info
             account_info = self.get_account_info()
             
-            # Check if cleanup is needed
-            if not self.needs_cleanup(account_info):
-                logger.info(f"Free space ({self._format_size(account_info['disk']['avail'])}) is above threshold ({self._format_size(self.threshold_bytes)}), no cleanup needed.")
+            # Get trash size from account info
+            trash_size = account_info.get('trash_size', 0)  
+            
+            # Calculate effective available space (including trash)
+            effective_avail = account_info['disk']['avail'] + trash_size
+            logger.info(f"Effective available space (including trash): {self._format_size(effective_avail)}")
+            
+            # Check if cleanup is needed based on effective available space
+            if not self.needs_cleanup(account_info, trash_size):
+                logger.info(f"Effective free space ({self._format_size(effective_avail)}) is above threshold ({self._format_size(self.threshold_bytes)}), no cleanup needed.")
                 return
             
             # Clean up space
@@ -342,12 +361,15 @@ class PutioStorageManager:
             sys.exit(1)
     
     @staticmethod
-    def _format_size(bytes_size: int) -> str:
+    def _format_size(bytes_size: Union[int, float]) -> str:
         """Format byte size to human-readable string"""
+        size = float(bytes_size)  # Convert to float for division
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if bytes_size < 1024 or unit == 'TB':
-                return f"{bytes_size:.2f} {unit}"
-            bytes_size /= 1024
+            if size < 1024 or unit == 'TB':
+                return f"{size:.2f} {unit}"
+            size /= 1024
+        # This should never happen with the TB fallback, but needed for LSP
+        return f"{size:.2f} PB"
 
 
 def main():
