@@ -4,6 +4,7 @@ put.io Storage Manager
 
 This script manages storage on put.io by automatically deleting oldest
 video files from designated folders when available space falls below a threshold.
+It can also clean up old files from trash if needed.
 
 Usage:
     python put_io_manager.py [--dry-run] [--threshold THRESHOLD_GB]
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 # Constants
 DEFAULT_SPACE_THRESHOLD_GB = 10
+TRASH_CLEANUP_THRESHOLD_GB = 5  # Threshold for when to clean trash
+TRASH_CLEANUP_TARGET_GB = 5  # How much space to free up from trash
+MIN_TRASH_AGE_DAYS = 1  # Minimum age of files in trash to delete (in days)
 DELETABLE_FOLDERS = ["chill.institute", "putfirst"]
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds
@@ -317,8 +321,160 @@ class PutioStorageManager:
         # Return success only if we've freed enough space
         return freed_space >= needed_space
     
-
+    def needs_trash_cleanup(self, account_info) -> bool:
+        """
+        Check if trash cleanup is needed based on available space
+        
+        Args:
+            account_info: Account information from get_account_info()
             
+        Returns:
+            True if trash cleanup is needed
+        """
+        # Get available space and trash size
+        avail_space = account_info['disk']['avail']
+        trash_size = account_info.get('trash_size', 0)
+        
+        # Convert thresholds to bytes
+        trash_cleanup_threshold = TRASH_CLEANUP_THRESHOLD_GB * (1024 ** 3)
+        
+        # Check if available space is below threshold and trash has files
+        return avail_space < trash_cleanup_threshold and trash_size > 0
+    
+    def get_trash_files(self) -> List[Dict]:
+        """
+        Get list of files in trash
+        
+        Returns:
+            List of file information dictionaries
+        """
+        logger.info("Getting files in trash...")
+        
+        for attempt in range(MAX_RETRIES):
+            try:
+                # Use the API endpoint to list trash
+                response = self.client.request("/files/list", params={"trash": "true"})
+                trash_files = response.get("files", [])
+                
+                # Debug log the first file to see its structure
+                if trash_files and len(trash_files) > 0:
+                    logger.debug(f"Sample trash file: {trash_files[0]}")
+                
+                logger.info(f"Found {len(trash_files)} files in trash")
+                return trash_files
+            except Exception as e:
+                logger.error(f"Error getting trash files (attempt {attempt+1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY)
+        
+        logger.error("Failed to get trash files after multiple attempts")
+        return []
+    
+    def permanently_delete_from_trash(self, file_id: int, file_name: str, file_size: int) -> bool:
+        """
+        Permanently delete a file from trash
+        
+        Args:
+            file_id: ID of the file to delete
+            file_name: Name of the file for logging
+            file_size: Size of the file
+            
+        Returns:
+            True if the file was deleted successfully
+        """
+        if self.dry_run:
+            logger.info(f"[DRY RUN] Would permanently delete from trash: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
+            self.deleted_files.append(f"Trash: {file_name}")
+            self.bytes_freed += file_size
+            return True
+        
+        logger.info(f"Permanently deleting from trash: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
+        
+        for attempt in range(MAX_RETRIES):
+            try:
+                # Use the API endpoint to permanently delete from trash
+                self.client.request("/files/delete/permanent", method="POST", data={"file_ids": file_id})
+                self.deleted_files.append(f"Trash: {file_name}")
+                self.bytes_freed += file_size
+                logger.info(f"Successfully deleted {file_name} from trash, freed {self._format_size(file_size)}")
+                return True
+            except Exception as e:
+                logger.error(f"Error deleting {file_name} from trash (attempt {attempt+1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY)
+        
+        return False
+    
+    def clean_up_trash(self, account_info) -> bool:
+        """
+        Clean up trash by permanently deleting oldest files
+        
+        Args:
+            account_info: Account information from get_account_info()
+            
+        Returns:
+            True if cleanup was successful
+        """
+        # Get available space and trash size
+        avail_space = account_info['disk']['avail']
+        trash_size = account_info.get('trash_size', 0)
+        
+        # Calculate target space to free (to reach TRASH_CLEANUP_TARGET_GB)
+        trash_target_bytes = TRASH_CLEANUP_TARGET_GB * (1024 ** 3)
+        needed_space = max(0, trash_target_bytes - avail_space)
+        
+        logger.info(f"Current available space: {self._format_size(avail_space)}")
+        logger.info(f"Current trash size: {self._format_size(trash_size)}")
+        logger.info(f"Need to free {self._format_size(needed_space)} from trash to reach target")
+        
+        # Get files in trash
+        trash_files = self.get_trash_files()
+        
+        if not trash_files:
+            logger.warning("No files found in trash.")
+            return False
+        
+        # Calculate the minimum date for files to be eligible for deletion
+        import datetime as dt
+        min_date = dt.datetime.now() - dt.timedelta(days=MIN_TRASH_AGE_DAYS)
+        
+        # Filter files that are old enough to delete
+        eligible_files = []
+        for file in trash_files:
+            # Parse the creation date from the file info
+            if 'created_at' in file:
+                created_at = putiopy.strptime(file['created_at'])
+                # Check if file is old enough
+                if created_at < min_date:
+                    eligible_files.append(file)
+        
+        logger.info(f"Found {len(eligible_files)} files in trash that are at least {MIN_TRASH_AGE_DAYS} day(s) old")
+        
+        if not eligible_files:
+            logger.warning("No eligible files found in trash to delete.")
+            return False
+        
+        # Sort files by creation date (oldest first)
+        eligible_files.sort(key=lambda x: putiopy.strptime(x['created_at']))
+        
+        # Delete files until we've freed enough space
+        freed_space = 0
+        for file in eligible_files:
+            if freed_space >= needed_space:
+                break
+            
+            file_id = file['id']
+            file_name = file['name']
+            file_size = file['size']
+            
+            if self.permanently_delete_from_trash(file_id, file_name, file_size):
+                freed_space += file_size
+        
+        logger.info(f"Freed {self._format_size(freed_space)} from trash")
+        
+        # Return success only if we've freed enough space
+        return freed_space >= needed_space
+    
     def run(self) -> None:
         """Run the storage manager to check and clean up space if needed"""
         try:
@@ -332,12 +488,31 @@ class PutioStorageManager:
             effective_avail = account_info['disk']['avail'] + trash_size
             logger.info(f"Effective available space (including trash): {self._format_size(effective_avail)}")
             
-            # Check if cleanup is needed based on effective available space
+            # Check if trash cleanup is needed first (less than 5GB free and trash has files)
+            if self.needs_trash_cleanup(account_info):
+                logger.info(f"Available space ({self._format_size(account_info['disk']['avail'])}) is below trash cleanup threshold ({self._format_size(TRASH_CLEANUP_THRESHOLD_GB * (1024 ** 3))}), attempting to clean trash")
+                trash_success = self.clean_up_trash(account_info)
+                
+                if trash_success and not self.dry_run:
+                    # Get updated account info after trash cleanup
+                    account_info = self.get_account_info()
+                    logger.info(f"Updated free space after trash cleanup: {self._format_size(account_info['disk']['avail'])}")
+            
+            # Check if cleanup is still needed based on effective available space 
+            # (we include trash in calculation since it could be freed)
+            trash_size = account_info.get('trash_size', 0)
             if not self.needs_cleanup(account_info, trash_size):
-                logger.info(f"Effective free space ({self._format_size(effective_avail)}) is above threshold ({self._format_size(self.threshold_bytes)}), no cleanup needed.")
+                logger.info(f"Effective free space ({self._format_size(account_info['disk']['avail'] + trash_size)}) is above threshold ({self._format_size(self.threshold_bytes)}), no cleanup needed.")
+                
+                # Print summary of any trash deletions
+                if self.deleted_files:
+                    logger.info(f"Deleted {len(self.deleted_files)} files/folders, freed {self._format_size(self.bytes_freed)}")
+                    for file in self.deleted_files:
+                        logger.info(f"  - {file}")
+                
                 return
             
-            # Clean up space
+            # Clean up space from regular files if still needed
             success = self.clean_up_space(account_info)
             
             # Print summary
