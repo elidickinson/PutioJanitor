@@ -30,21 +30,48 @@ jobs:
           pip install requests tus.py
 
       - name: Run Put.io storage manager
+        id: cleanup
         env:
           PUTIO_TOKEN: ${{ secrets.PUTIO_TOKEN }}
         run: |
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            python put_io_manager.py --dry-run --threshold 10
+          # Run script and capture output
+          OUTPUT=$(python put_io_manager.py --threshold 10 ${{ github.event.inputs.dry_run && '--dry-run' || '' }})
+          
+          # Extract key information
+          DELETED_FILES=$(echo "$OUTPUT" | grep "^  - " || echo "None")
+          SPACE_FREED=$(echo "$OUTPUT" | grep "freed" | tail -n1 || echo "No space freed")
+          
+          # Create a summary file
+          echo "### Storage Cleanup Summary" > $GITHUB_STEP_SUMMARY
+          echo "Run type: ${{ github.event.inputs.dry_run && 'Dry Run' || 'Production' }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "Files Deleted:" >> $GITHUB_STEP_SUMMARY
+          echo "$DELETED_FILES" >> $GITHUB_STEP_SUMMARY
+          echo "Space Impact: $SPACE_FREED" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          
+          # Set outputs for job summary
+          if [[ "$DELETED_FILES" != "None" ]]; then
+            echo "deleted_files=true" >> $GITHUB_OUTPUT
           else
-            python put_io_manager.py --threshold 10
+            echo "deleted_files=false" >> $GITHUB_OUTPUT
           fi
+          
+          # Update run name with summary
+          if [[ "$DELETED_FILES" != "None" ]]; then
+            echo "Cleanup: Files deleted - $SPACE_FREED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Cleanup: No files deleted" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Exit with original output
+          echo "$OUTPUT"
       
-      - name: Report status
+      - name: Update run name
         if: always()
         run: |
-          if [ ${{ job.status }} == 'success' ]; then
-            echo "Storage cleanup completed successfully!"
-            echo "Check the logs for details on what files were deleted."
+          if [[ "${{ steps.cleanup.outputs.deleted_files }}" == "true" ]]; then
+            echo "name=🗑️ Cleanup - Files Deleted" >> $GITHUB_OUTPUT
           else
-            echo "Storage cleanup failed. Please check the logs for details."
+            echo "name=✓ Cleanup - No Action Needed" >> $GITHUB_OUTPUT
           fi
