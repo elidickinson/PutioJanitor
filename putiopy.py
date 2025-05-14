@@ -326,6 +326,26 @@ class _Account:
     def settings(cls):
         """Get account settings"""
         return cls.client.request("/account/settings")["settings"]
+        
+    @classmethod
+    def list_trash(cls):
+        """List files in trash"""
+        response = cls.client.request("/files/list", params={"trash": "true"})
+        return response.get("files", [])
+        
+    @classmethod
+    def delete_from_trash(cls, file_ids):
+        """Permanently delete files from trash
+        
+        Args:
+            file_ids: ID or comma-separated list of IDs to delete
+        """
+        return cls.client.request(
+            "/files/delete", 
+            method="POST", 
+            data={"file_ids": file_ids},
+            params={"trash": "true", "permanently": "true"}
+        )
 
 class _File(_BaseResource):
 

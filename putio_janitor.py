@@ -356,18 +356,8 @@ class PutioStorageManager:
         
         for attempt in range(MAX_RETRIES):
             try:
-                # Use the API endpoint to list trash
-                response = self.client.request("/files/list", params={"trash": "true"})
-                
-                # Extract files from the response
-                if isinstance(response, dict) and "files" in response:
-                    trash_files = response["files"]
-                else:
-                    logger.error(f"Unexpected response format: {response}")
-                    if attempt < MAX_RETRIES - 1:
-                        time.sleep(RETRY_DELAY)
-                        continue
-                    return []
+                # Use the Account class method to list trash
+                trash_files = self.client.Account.list_trash()
                 
                 # Debug log the first file to see its structure
                 if trash_files and len(trash_files) > 0:
@@ -405,11 +395,8 @@ class PutioStorageManager:
         
         for attempt in range(MAX_RETRIES):
             try:
-                # Use the API endpoint to permanently delete from trash
-                # Based on our tests, this is the working endpoint
-                self.client.request("/files/delete", method="POST", 
-                                   data={"file_ids": file_id}, 
-                                   params={"trash": "true", "permanently": "true"})
+                # Use the Account class method to delete from trash
+                self.client.Account.delete_from_trash(file_id)
                 
                 self.deleted_files.append(f"Trash: {file_name}")
                 self.bytes_freed += file_size
@@ -564,77 +551,6 @@ class PutioStorageManager:
         return f"{size:.2f} PB"
 
 
-def test_trash_api(token):
-    """Test trash-related API endpoints"""
-    logger.info("*** TESTING TRASH API ENDPOINTS ***")
-    
-    client = putiopy.Client(token, use_retry=True)
-    
-    # Test listing trash
-    logger.info("Testing listing files in trash...")
-    try:
-        # Test with trash=true parameter
-        response = client.request("/files/list", params={"trash": "true"})
-        if isinstance(response, dict):
-            logger.info(f"Response keys: {list(response.keys())}")
-            files = response.get("files", [])
-            logger.info(f"Found {len(files)} files in trash")
-        
-        # Print sample file info if available
-        if files and len(files) > 0:
-            sample_file = files[0]
-            logger.info(f"Sample trash file: {sample_file}")
-            logger.info(f"Sample file keys: {list(sample_file.keys())}")
-            
-            # Check if file has required attributes for our implementation
-            for key in ['id', 'name', 'size', 'created_at']:
-                if key in sample_file:
-                    logger.info(f"  - {key}: {sample_file[key]}")
-                else:
-                    logger.warning(f"  - Missing key: {key}")
-    except Exception as e:
-        logger.error(f"Error listing trash: {e}")
-    
-    # Test trash endpoints
-    logger.info("Testing trash-related endpoints...")
-    
-    # Test candidate trash deletion endpoints
-    possible_endpoints = [
-        ("/files/delete/permanent", "POST"),
-        ("/files/trash/delete", "POST"),
-        ("/files/trash/empty", "POST"),
-        ("/trash/delete", "POST"),
-        ("/trash/empty", "POST"),
-        ("/files/delete", "POST", {"trash": "true", "permanently": "true"}),
-    ]
-    
-    for endpoint_info in possible_endpoints:
-        endpoint = endpoint_info[0]
-        method = endpoint_info[1]
-        params = endpoint_info[2] if len(endpoint_info) > 2 else {}
-        
-        logger.info(f"Testing endpoint: {method} {endpoint} {params}")
-        try:
-            # Use a non-existent file ID to avoid actually deleting anything
-            data = {"file_ids": "-1"}
-            
-            # Make the request
-            test_response = client.request(endpoint, method=method, data=data, params=params, raw=True)
-            logger.info(f"Response status: {test_response.status_code}")
-            logger.info(f"Response: {test_response.text}")
-        except Exception as e:
-            logger.error(f"Error testing endpoint {endpoint}: {e}")
-            
-    # Test if we can restore from trash (this functionality might be useful in future)
-    logger.info("Testing trash restore endpoint...")
-    try:
-        test_response = client.request("/files/restore", method="POST", data={"file_ids": "-1"}, raw=True)
-        logger.info(f"Restore endpoint status: {test_response.status_code}")
-        logger.info(f"Response: {test_response.text}")
-    except Exception as e:
-        logger.error(f"Error testing restore endpoint: {e}")
-    
-    logger.info("*** TRASH API TEST COMPLETE ***")
 
 def main():
     """Main function to parse arguments and run the storage manager"""
@@ -643,7 +559,6 @@ def main():
     parser.add_argument("--threshold", type=float, default=DEFAULT_SPACE_THRESHOLD_GB, 
                       help=f"Free space threshold in GB (default: {DEFAULT_SPACE_THRESHOLD_GB})")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--test-trash-api", action="store_true", help="Test trash API endpoints")
     args = parser.parse_args()
     
     # Set logging level
@@ -655,11 +570,6 @@ def main():
     if not token:
         logger.error("PUTIO_TOKEN environment variable is not set")
         sys.exit(1)
-    
-    # Test trash API if requested
-    if args.test_trash_api:
-        test_trash_api(token)
-        return
     
     # Determine if we should use dry run mode
     # Command line argument overrides environment variable
