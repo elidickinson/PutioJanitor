@@ -1,25 +1,33 @@
 # Put.io Janitor
 
-A Python script that automatically manages storage on put.io by deleting oldest video files from designated folders when space falls below a threshold. **One-click deployment to GitHub Actions for automated, scheduled cleanup.**
+A Python script that automatically manages storage on put.io by deleting oldest video files from designated folders when free space falls below a threshold. **Nothing to install - it can run as a Github Action for free.**
 
 ## Features
 
-- **One-click GitHub Actions deployment** - Set up automated storage management in seconds
+- Simple GitHub Actions deployment
 - Automatically maintains free space on your put.io account (default: 10 GB)
 - Configurable via environment variables - no code changes needed
-- Only deletes files from specified folders (configurable)
+- Limited to certain files (default: "chill.institute" and "putfirst"
 - Deletes oldest files first, based on creation date
 - Treats subfolders containing movie files as complete units (deletes entire folder)
 - Trash management included - cleans up trash when space is critically low
 
 ## Quick Start: Deploy to GitHub Actions
 
+### Get a Token
+1. Log in to [put.io](https://put.io)
+2. Go to **Settings** → **OAuth Applications**
+3. Click **Create new OAuth app**
+  - Name: Your app name
+  - Redirect URI: `urn:ietf:wg:oauth:2.0:oob`
+4. Click on the created app → **Generate token**
+5. Copy and save the token securely
+
+### Deploy on Github
 1. **Fork this repository** to your GitHub account
 2. Go to your forked repo's **Settings** tab → **Secrets and variables** → **Actions**
 3. Add a new repository secret named `PUTIO_TOKEN` with your put.io API token
-4. That's it! The workflow will run daily at 10:00 UTC (5:00 AM Eastern Time)
-
-The GitHub Action is preconfigured to run with safe defaults. If you want to customize the settings, you can edit the `.github/workflows/cleanup.yml` file directly in GitHub.
+4. That's it! The workflow will run daily at 10:00 UTC (5:00 AM Eastern Time). Note it only looks in directories "chill.institute" and "putfirst" by default.
 
 ## Configuration
 
