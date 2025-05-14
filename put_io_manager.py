@@ -657,14 +657,24 @@ def main():
         test_trash_api(token)
         return
     
+    # Determine if we should use dry run mode
+    # Command line argument overrides environment variable
+    dry_run = args.dry_run
+    if not dry_run and os.environ.get("PUTIO_DRY_RUN", "").lower() in ("true", "1", "yes"):
+        dry_run = True
+    
+    # Get threshold from command line or environment variable
+    # Command line argument overrides environment variable
+    threshold = args.threshold
+    
     # Log startup information
     logger.info(f"Starting put.io storage manager")
-    logger.info(f"Threshold: {args.threshold} GB")
-    logger.info(f"Dry run: {args.dry_run}")
+    logger.info(f"Threshold: {threshold} GB")
+    logger.info(f"Dry run: {dry_run}")
     logger.info(f"Deletable folders: {', '.join(DELETABLE_FOLDERS)}")
     
     # Create and run the storage manager
-    manager = PutioStorageManager(token, args.threshold, args.dry_run)
+    manager = PutioStorageManager(token, threshold, dry_run)
     manager.run()
 
 

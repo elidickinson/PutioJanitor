@@ -35,6 +35,7 @@ All settings can be configured using environment variables:
 | `PUTIO_DELETABLE_FOLDERS` | Comma-separated list of folders to manage | chill.institute,putfirst |
 | `PUTIO_MAX_RETRIES` | Maximum API call retry attempts | 3 |
 | `PUTIO_RETRY_DELAY` | Seconds between retry attempts | 5 |
+| `PUTIO_DRY_RUN` | Set to "true" to run without deleting files | false |
 
 ## Manual Usage
 
@@ -62,7 +63,7 @@ python put_io_manager.py --debug
 
 ## GitHub Actions Integration
 
-This repository includes a GitHub Actions workflow that runs the script automatically once per day at 2:00 AM UTC. The workflow file is already set up in `.github/workflows/putio-manager.yml`.
+This repository includes a GitHub Actions workflow that runs the script automatically once per day at 10:00 UTC (5:00 AM Eastern Time). The workflow file is already set up in `.github/workflows/cleanup.yml`.
 
 ### Testing the Workflow
 
@@ -79,7 +80,7 @@ You can check the workflow logs to see what would be deleted. By default, the fi
 
 To customize the schedule or settings:
 
-1. Edit the `.github/workflows/putio-manager.yml` file in your repository
+1. Edit the `.github/workflows/cleanup.yml` file in your repository
 2. For the schedule, modify the `cron` expression under the `schedule` section
 3. To configure the environment variables, uncomment and modify the desired variables
 4. Commit your changes
@@ -93,13 +94,25 @@ To set environment variables for your workflow:
 3. Click **New repository variable**
 4. Add your variables (e.g., `PUTIO_SPACE_THRESHOLD_GB` with value `15`)
 
-
-
 You can also manually trigger the workflow from the Actions tab in your repository.
 
-## Customization
+## Using Environment Variables Instead of Command-Line Arguments
 
-To change which folders are monitored, edit the `DELETABLE_FOLDERS` variable in `put_io_manager.py`.
+The script prioritizes environment variables over command-line arguments when both are provided. This is ideal for GitHub Actions deployment.
+
+For example, instead of running:
+```bash
+python put_io_manager.py --threshold 15 --dry-run
+```
+
+You can now use environment variables:
+```bash
+export PUTIO_SPACE_THRESHOLD_GB=15
+export PUTIO_DELETABLE_FOLDERS=movies,downloads
+python put_io_manager.py --dry-run
+```
+
+This makes it easy to configure the script via GitHub Actions environment variables without changing the code.
 
 ## License
 

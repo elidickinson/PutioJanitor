@@ -42,8 +42,11 @@ jobs:
           # PUTIO_MAX_RETRIES: "3"
           # PUTIO_RETRY_DELAY: "5"
         run: |
+          # Set dry run mode based on inputs
+          ${{ github.event.inputs.dry_run && 'export PUTIO_DRY_RUN=true' || '' }}
+          
           # Run script and capture output
-          OUTPUT=$(python put_io_manager.py ${{ github.event.inputs.dry_run && '--dry-run' || '' }})
+          OUTPUT=$(python put_io_manager.py)
           
           # Extract key information
           DELETED_FILES=$(echo "$OUTPUT" | grep "^  - " || echo "None")
