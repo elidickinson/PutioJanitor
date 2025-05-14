@@ -16,17 +16,19 @@ A Python script that automatically manages storage on put.io by deleting oldest 
 
 ### Get a Token
 1. Log in to [put.io](https://put.io)
-2. Go to **Settings** → **OAuth Applications**
-3. Click **Create new OAuth app**
-  - Name: Your app name
-  - Redirect URI: `urn:ietf:wg:oauth:2.0:oob`
-4. Click on the created app → **Generate token**
-5. Copy and save the token securely
+2. Go to **Settings** → **API**
+3. Click **Create new OAuth app**. The details on this page don't matter but the Name should be unique.
+  - Name: Put.io Janitor for <your_name>
+  - Description: Put.io Janitor
+  - Application website: https://github.com/elidickinson/PutioJanitor
+  - Callback URL: `urn:ietf:wg:oauth:2.0:oob`
+  - "Don't show in Extensions page" is checked
+4. Copy the **OAuth Token** for the next step.
 
 ### Deploy on Github
 1. **Fork this repository** to your GitHub account
 2. Go to your forked repo's **Settings** tab → **Secrets and variables** → **Actions**
-3. Add a new repository secret named `PUTIO_TOKEN` with your put.io API token
+3. Add a new repository secret named `PUTIO_TOKEN` with your put.io OAuth Token
 4. That's it! The workflow will run daily at 10:00 UTC (5:00 AM Eastern Time). Note it only looks in directories "chill.institute" and "putfirst" by default.
 
 ## Configuration
