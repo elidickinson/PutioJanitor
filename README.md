@@ -10,7 +10,7 @@ A Python script that automatically manages storage on put.io by deleting oldest 
 - Limited to certain files (default: "chill.institute" and "putfirst"
 - Deletes oldest files first, based on creation date
 - Treats subfolders containing movie files as complete units (deletes entire folder)
-- Trash management included - cleans up trash when space is critically low
+- Optionally also purge files from trash (disabled by default)
 
 ## Quick Start: Deploy to GitHub Actions
 
@@ -39,7 +39,7 @@ All settings can be configured using environment variables:
 |---|---|---|
 | `PUTIO_TOKEN` | **Required** - Your put.io API token | None |
 | `PUTIO_SPACE_THRESHOLD_GB` | Free space threshold in GB | 10 |
-| `PUTIO_TRASH_CLEANUP_THRESHOLD_GB` | When to clean trash (GB) | 5 |
+| `PUTIO_TRASH_CLEANUP_THRESHOLD_GB` | When to clean trash (GB). Set to 0 to disable trash cleanup completely. | 0 |
 | `PUTIO_TRASH_CLEANUP_TARGET_GB` | How much space to free from trash (GB) | 5 |
 | `PUTIO_MIN_TRASH_AGE_DAYS` | Minimum age of files in trash to delete | 2 |
 | `PUTIO_DELETABLE_FOLDERS` | Comma-separated list of folders to manage | chill.institute,putfirst |

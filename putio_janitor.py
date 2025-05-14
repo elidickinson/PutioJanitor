@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Constants (configurable via environment variables)
 DEFAULT_SPACE_THRESHOLD_GB = float(os.environ.get("PUTIO_SPACE_THRESHOLD_GB", "10"))
-TRASH_CLEANUP_THRESHOLD_GB = float(os.environ.get("PUTIO_TRASH_CLEANUP_THRESHOLD_GB", "5"))  # Threshold for when to clean trash
+TRASH_CLEANUP_THRESHOLD_GB = float(os.environ.get("PUTIO_TRASH_CLEANUP_THRESHOLD_GB", "0"))  # Threshold for when to clean trash (0 means never clean trash)
 TRASH_CLEANUP_TARGET_GB = float(os.environ.get("PUTIO_TRASH_CLEANUP_TARGET_GB", "5"))  # How much space to free up from trash
 MIN_TRASH_AGE_DAYS = int(os.environ.get("PUTIO_MIN_TRASH_AGE_DAYS", "2"))  # Minimum age of files in trash to delete (in days)
 DELETABLE_FOLDERS = os.environ.get("PUTIO_DELETABLE_FOLDERS", "chill.institute,putfirst").split(",")
@@ -331,6 +331,10 @@ class PutioStorageManager:
         Returns:
             True if trash cleanup is needed
         """
+        # If trash cleanup threshold is 0, never clean trash
+        if TRASH_CLEANUP_THRESHOLD_GB <= 0:
+            return False
+            
         # Get available space and trash size
         avail_space = account_info['disk']['avail']
         trash_size = account_info.get('trash_size', 0)
