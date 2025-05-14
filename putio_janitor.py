@@ -16,8 +16,8 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional, Set, Tuple, Union
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Union
 
 import putiopy
 
@@ -70,6 +70,7 @@ class PutioStorageManager:
         self.root_folder_ids = {}  # Mapping of folder names to IDs
         self.deleted_files = []
         self.bytes_freed = 0
+        self.gb_to_bytes = lambda gb: gb * (1024 ** 3)
         
     def get_account_info(self) -> Dict:
         """
@@ -79,30 +80,23 @@ class PutioStorageManager:
             Dict containing account information
         """
         logger.info("Getting account information...")
-        for attempt in range(MAX_RETRIES):
-            try:
-                account = self.client.Account.info()
-                logger.debug(f"Account info raw response: {account}")
-                
-                # Access the disk info from the dictionary
-                disk_size = account['disk']['size']
-                disk_used = account['disk']['used']
-                disk_avail = account['disk']['avail']
-                
-                # Get trash size if available
-                trash_size = account.get('trash_size', 0)
-                
-                logger.info(f"Total disk space: {self._format_size(disk_size)}")
-                logger.info(f"Used space: {self._format_size(disk_used)}")
-                logger.info(f"Available space: {self._format_size(disk_avail)}")
-                logger.info(f"Trash size: {self._format_size(trash_size)}")
-                return account
-            except Exception as e:
-                logger.error(f"Error getting account info (attempt {attempt+1}/{MAX_RETRIES}): {e}")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(RETRY_DELAY)
-                else:
-                    raise
+        try:
+            account = self.client.Account.info()
+            logger.debug(f"Account info raw response: {account}")
+            
+            # Log disk and trash information
+            disk = account['disk']
+            trash_size = account.get('trash_size', 0)
+            
+            logger.info(f"Total disk space: {self._format_size(disk['size'])}")
+            logger.info(f"Used space: {self._format_size(disk['used'])}")
+            logger.info(f"Available space: {self._format_size(disk['avail'])}")
+            logger.info(f"Trash size: {self._format_size(trash_size)}")
+            
+            return account
+        except Exception as e:
+            logger.error(f"Error getting account info: {e}")
+            raise
 
     def needs_cleanup(self, account_info, trash_size: int = 0) -> bool:
         """
@@ -125,29 +119,27 @@ class PutioStorageManager:
     def find_deletable_folders(self) -> None:
         """Find and store IDs of the folders that are allowed to be cleaned up"""
         logger.info("Finding deletable folders...")
-        root_files = self.client.File.list()
-        
-        # Add debug info to see what attributes are available
-        if root_files and len(root_files) > 0:
-            sample_file = root_files[0]
-            logger.debug(f"Sample file attributes: {dir(sample_file)}")
-            logger.debug(f"Sample file __dict__: {sample_file.__dict__}")
-        
-        for folder_name in DELETABLE_FOLDERS:
-            for file in root_files:
-                # Check if file is a folder (file_type is "FOLDER" or content_type is "application/x-directory")
-                is_folder = False
-                if hasattr(file, 'file_type'):
-                    is_folder = file.file_type == "FOLDER"
-                elif hasattr(file, 'content_type'):
-                    is_folder = file.content_type == "application/x-directory"
-                
-                if file.name == folder_name and is_folder:
-                    self.root_folder_ids[folder_name] = file.id
-                    logger.info(f"Found deletable folder: {folder_name} (ID: {file.id})")
-        
-        if not self.root_folder_ids:
-            logger.warning(f"None of the specified folders {DELETABLE_FOLDERS} were found!")
+        try:
+            root_files = self.client.File.list()
+            
+            # Add debug info to see what attributes are available
+            if root_files and len(root_files) > 0:
+                logger.debug(f"Sample file attributes: {dir(root_files[0])}")
+            
+            for folder_name in DELETABLE_FOLDERS:
+                for file in root_files:
+                    is_folder = (hasattr(file, 'file_type') and file.file_type == "FOLDER") or \
+                               (hasattr(file, 'content_type') and file.content_type == "application/x-directory")
+                    
+                    if file.name == folder_name and is_folder:
+                        self.root_folder_ids[folder_name] = file.id
+                        logger.info(f"Found deletable folder: {folder_name} (ID: {file.id})")
+            
+            if not self.root_folder_ids:
+                logger.warning(f"None of the specified folders {DELETABLE_FOLDERS} were found!")
+        except Exception as e:
+            logger.error(f"Error finding deletable folders: {e}")
+            raise
     
     def get_files_in_folder(self, folder_id: int, parent_path: str = "") -> List[FileInfo]:
         """
@@ -187,8 +179,9 @@ class PutioStorageManager:
                 subfiles = self.get_files_in_folder(file.id, current_path)
                 
                 # If the folder or any subfolder contains a video, mark it
-                has_video = any(subfile.is_video or subfile.folder_has_video for subfile in subfiles)
-                file_info.folder_has_video = has_video
+                file_info.folder_has_video = any(
+                    subfile.is_video or subfile.folder_has_video for subfile in subfiles
+                )
                 
                 # Add all subfiles to the result
                 result.extend(subfiles)
@@ -258,20 +251,15 @@ class PutioStorageManager:
             return True
         
         logger.info(f"Deleting: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
-        
-        for attempt in range(MAX_RETRIES):
-            try:
-                self.client.request(f"/files/delete", method="POST", data={"file_ids": file_id})
-                self.deleted_files.append(file_name)
-                self.bytes_freed += file_size
-                logger.info(f"Successfully deleted {file_name}, freed {self._format_size(file_size)}")
-                return True
-            except Exception as e:
-                logger.error(f"Error deleting {file_name} (attempt {attempt+1}/{MAX_RETRIES}): {e}")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(RETRY_DELAY)
-        
-        return False
+        try:
+            self.client.request("/files/delete", method="POST", data={"file_ids": file_id})
+            self.deleted_files.append(file_name)
+            self.bytes_freed += file_size
+            logger.info(f"Successfully deleted {file_name}, freed {self._format_size(file_size)}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting {file_name}: {e}")
+            return False
 
     def clean_up_space(self, account_info) -> bool:
         """
@@ -339,11 +327,8 @@ class PutioStorageManager:
         avail_space = account_info['disk']['avail']
         trash_size = account_info.get('trash_size', 0)
         
-        # Convert thresholds to bytes
-        trash_cleanup_threshold = TRASH_CLEANUP_THRESHOLD_GB * (1024 ** 3)
-        
         # Check if available space is below threshold and trash has files
-        return avail_space < trash_cleanup_threshold and trash_size > 0
+        return avail_space < self.gb_to_bytes(TRASH_CLEANUP_THRESHOLD_GB) and trash_size > 0
     
     def get_trash_files(self) -> List[Dict]:
         """
@@ -354,24 +339,18 @@ class PutioStorageManager:
         """
         logger.info("Getting files in trash...")
         
-        for attempt in range(MAX_RETRIES):
-            try:
-                # Use the Account class method to list trash
-                trash_files = self.client.Account.list_trash()
-                
-                # Debug log the first file to see its structure
-                if trash_files and len(trash_files) > 0:
-                    logger.debug(f"Sample trash file: {trash_files[0]}")
-                
-                logger.info(f"Found {len(trash_files)} files in trash")
-                return trash_files
-            except Exception as e:
-                logger.error(f"Error getting trash files (attempt {attempt+1}/{MAX_RETRIES}): {e}")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(RETRY_DELAY)
-        
-        logger.error("Failed to get trash files after multiple attempts")
-        return []
+        try:
+            trash_files = self.client.Account.list_trash()
+            
+            # Debug log the first file to see its structure
+            if trash_files and len(trash_files) > 0:
+                logger.debug(f"Sample trash file: {trash_files[0]}")
+            
+            logger.info(f"Found {len(trash_files)} files in trash")
+            return trash_files
+        except Exception as e:
+            logger.error(f"Error getting trash files: {e}")
+            return []
     
     def permanently_delete_from_trash(self, file_id: int, file_name: str, file_size: int) -> bool:
         """
@@ -392,22 +371,15 @@ class PutioStorageManager:
             return True
         
         logger.info(f"Permanently deleting from trash: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
-        
-        for attempt in range(MAX_RETRIES):
-            try:
-                # Use the Account class method to delete from trash
-                self.client.Account.delete_from_trash(file_id)
-                
-                self.deleted_files.append(f"Trash: {file_name}")
-                self.bytes_freed += file_size
-                logger.info(f"Successfully deleted {file_name} from trash, freed {self._format_size(file_size)}")
-                return True
-            except Exception as e:
-                logger.error(f"Error deleting {file_name} from trash (attempt {attempt+1}/{MAX_RETRIES}): {e}")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(RETRY_DELAY)
-        
-        return False
+        try:
+            self.client.Account.delete_from_trash(file_id)
+            self.deleted_files.append(f"Trash: {file_name}")
+            self.bytes_freed += file_size
+            logger.info(f"Successfully deleted {file_name} from trash, freed {self._format_size(file_size)}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting {file_name} from trash: {e}")
+            return False
     
     def clean_up_trash(self, account_info) -> bool:
         """
@@ -424,7 +396,7 @@ class PutioStorageManager:
         trash_size = account_info.get('trash_size', 0)
         
         # Calculate target space to free (to reach TRASH_CLEANUP_TARGET_GB)
-        trash_target_bytes = TRASH_CLEANUP_TARGET_GB * (1024 ** 3)
+        trash_target_bytes = self.gb_to_bytes(TRASH_CLEANUP_TARGET_GB)
         needed_space = max(0, trash_target_bytes - avail_space)
         
         logger.info(f"Current available space: {self._format_size(avail_space)}")
@@ -439,18 +411,13 @@ class PutioStorageManager:
             return False
         
         # Calculate the minimum date for files to be eligible for deletion
-        import datetime as dt
-        min_date = dt.datetime.now() - dt.timedelta(days=MIN_TRASH_AGE_DAYS)
+        min_date = datetime.now() - timedelta(days=MIN_TRASH_AGE_DAYS)
         
         # Filter files that are old enough to delete
-        eligible_files = []
-        for file in trash_files:
-            # Parse the creation date from the file info
-            if 'created_at' in file:
-                created_at = putiopy.strptime(file['created_at'])
-                # Check if file is old enough
-                if created_at < min_date:
-                    eligible_files.append(file)
+        eligible_files = [
+            file for file in trash_files 
+            if 'created_at' in file and putiopy.strptime(file['created_at']) < min_date
+        ]
         
         logger.info(f"Found {len(eligible_files)} files in trash that are at least {MIN_TRASH_AGE_DAYS} day(s) old")
         
@@ -467,12 +434,8 @@ class PutioStorageManager:
             if freed_space >= needed_space:
                 break
             
-            file_id = file['id']
-            file_name = file['name']
-            file_size = file['size']
-            
-            if self.permanently_delete_from_trash(file_id, file_name, file_size):
-                freed_space += file_size
+            if self.permanently_delete_from_trash(file['id'], file['name'], file['size']):
+                freed_space += file['size']
         
         logger.info(f"Freed {self._format_size(freed_space)} from trash")
         
@@ -571,24 +534,17 @@ def main():
         logger.error("PUTIO_TOKEN environment variable is not set")
         sys.exit(1)
     
-    # Determine if we should use dry run mode
-    # Command line argument overrides environment variable
-    dry_run = args.dry_run
-    if not dry_run and os.environ.get("PUTIO_DRY_RUN", "").lower() in ("true", "1", "yes"):
-        dry_run = True
-    
-    # Get threshold from command line or environment variable
-    # Command line argument overrides environment variable
-    threshold = args.threshold
+    # Determine if we should use dry run mode (CLI arg overrides env var)
+    dry_run = args.dry_run or os.environ.get("PUTIO_DRY_RUN", "").lower() in ("true", "1", "yes")
     
     # Log startup information
     logger.info(f"Starting put.io storage manager")
-    logger.info(f"Threshold: {threshold} GB")
+    logger.info(f"Threshold: {args.threshold} GB")
     logger.info(f"Dry run: {dry_run}")
     logger.info(f"Deletable folders: {', '.join(DELETABLE_FOLDERS)}")
     
     # Create and run the storage manager
-    manager = PutioStorageManager(token, threshold, dry_run)
+    manager = PutioStorageManager(token, args.threshold, dry_run)
     manager.run()
 
 
