@@ -1,0 +1,41 @@
+name: Put.io Storage Manager
+
+on:
+  schedule:
+    # Run daily at 2:00 AM UTC (adjust as needed)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Allow manual triggering from GitHub UI
+
+jobs:
+  cleanup-storage:
+    runs-on: ubuntu-latest
+    name: Clean up Put.io storage
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: pip install requests tus.py
+      
+      - name: Run storage cleanup
+        env:
+          # Required API token
+          PUTIO_TOKEN: ${{ secrets.PUTIO_TOKEN }}
+          
+          # Optional configuration (uncomment and modify as needed)
+          # PUTIO_SPACE_THRESHOLD_GB: "10"
+          # PUTIO_TRASH_CLEANUP_THRESHOLD_GB: "5"
+          # PUTIO_TRASH_CLEANUP_TARGET_GB: "5"
+          # PUTIO_MIN_TRASH_AGE_DAYS: "2"
+          # PUTIO_DELETABLE_FOLDERS: "chill.institute,putfirst"
+          # PUTIO_MAX_RETRIES: "3"
+          # PUTIO_RETRY_DELAY: "5"
+        run: python put_io_manager.py

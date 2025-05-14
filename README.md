@@ -1,66 +1,99 @@
 # Put.io Storage Manager
 
-A Python script that automatically manages storage on put.io by deleting oldest video files from designated folders when space falls below a threshold.
+A Python script that automatically manages storage on put.io by deleting oldest video files from designated folders when space falls below a threshold. **One-click deployment to GitHub Actions for automated, scheduled cleanup.**
 
 ## Features
 
-- Automatically maintains at least 10 GB of free space on your put.io account
-- Only deletes files from specified folders ("chill.institute" and "putfirst")
+- **One-click GitHub Actions deployment** - Set up automated storage management in seconds
+- Automatically maintains free space on your put.io account (default: 10 GB)
+- Configurable via environment variables - no code changes needed
+- Only deletes files from specified folders (configurable)
 - Deletes oldest files first, based on creation date
 - Treats subfolders containing movie files as complete units (deletes entire folder)
-- Can be run manually or automatically via GitHub Actions
+- Trash management included - cleans up trash when space is critically low
 
-## Requirements
+## Quick Start: Deploy to GitHub Actions
 
-- Python 3.6+
-- put.io API token with read/write access
-- Required Python packages: `requests`, `tus.py`
+1. **Fork this repository** to your GitHub account
+2. Go to your forked repo's **Settings** tab → **Secrets and variables** → **Actions**
+3. Add a new repository secret named `PUTIO_TOKEN` with your put.io API token
+4. That's it! The workflow will run daily at 10:00 UTC (5:00 AM Eastern Time)
 
-## Installation
+The GitHub Action is preconfigured to run with safe defaults. If you want to customize the settings, you can edit the `.github/workflows/cleanup.yml` file directly in GitHub.
 
-1. Clone this repository
-2. Install required packages:
-   ```
-   pip install requests tus.py
-   ```
-3. Set your put.io API token as an environment variable:
-   ```
-   export PUTIO_TOKEN=your_api_token_here
-   ```
+## Configuration
 
-## Usage
+All settings can be configured using environment variables:
 
-Run the script with default settings (10 GB threshold):
+| Environment Variable | Description | Default Value |
+|---|---|---|
+| `PUTIO_TOKEN` | **Required** - Your put.io API token | None |
+| `PUTIO_SPACE_THRESHOLD_GB` | Free space threshold in GB | 10 |
+| `PUTIO_TRASH_CLEANUP_THRESHOLD_GB` | When to clean trash (GB) | 5 |
+| `PUTIO_TRASH_CLEANUP_TARGET_GB` | How much space to free from trash (GB) | 5 |
+| `PUTIO_MIN_TRASH_AGE_DAYS` | Minimum age of files in trash to delete | 2 |
+| `PUTIO_DELETABLE_FOLDERS` | Comma-separated list of folders to manage | chill.institute,putfirst |
+| `PUTIO_MAX_RETRIES` | Maximum API call retry attempts | 3 |
+| `PUTIO_RETRY_DELAY` | Seconds between retry attempts | 5 |
 
-```
+## Manual Usage
+
+If you prefer to run the script manually:
+
+```bash
+# Install requirements
+pip install requests tus.py
+
+# Set your API token
+export PUTIO_TOKEN=your_api_token_here
+
+# Run with default settings (10 GB threshold)
 python put_io_manager.py
-```
 
-Run with custom threshold:
-
-```
-python put_io_manager.py --threshold 15
-```
-
-Test without deleting any files (dry run):
-
-```
+# Test without deleting any files (dry run)
 python put_io_manager.py --dry-run
-```
 
-Enable debug logging:
+# Run with custom threshold
+python put_io_manager.py --threshold 15
 
-```
+# Enable debug logging
 python put_io_manager.py --debug
 ```
 
 ## GitHub Actions Integration
 
-This repository includes a GitHub Actions workflow that runs the script automatically once per day at 2:00 AM UTC. To use it:
+This repository includes a GitHub Actions workflow that runs the script automatically once per day at 2:00 AM UTC. The workflow file is already set up in `.github/workflows/putio-manager.yml`.
 
-1. Fork this repository
-2. Go to your repository's Settings > Secrets and add your put.io API token as `PUTIO_TOKEN`
-3. That's it! The workflow will run automatically.
+### Testing the Workflow
+
+To test the workflow immediately after setting up:
+
+1. Go to the **Actions** tab in your GitHub repository
+2. Select the **Put.io Storage Manager** workflow on the left
+3. Click the **Run workflow** button on the right
+4. Select the branch and click **Run workflow**
+
+You can check the workflow logs to see what would be deleted. By default, the first run uses `--dry-run` mode which doesn't actually delete anything.
+
+### Customizing the Workflow
+
+To customize the schedule or settings:
+
+1. Edit the `.github/workflows/putio-manager.yml` file in your repository
+2. For the schedule, modify the `cron` expression under the `schedule` section
+3. To configure the environment variables, uncomment and modify the desired variables
+4. Commit your changes
+
+### Environment Variables in GitHub Actions
+
+To set environment variables for your workflow:
+
+1. Go to your repository's **Settings** tab → **Secrets and variables** → **Actions**
+2. Switch to the **Variables** tab
+3. Click **New repository variable**
+4. Add your variables (e.g., `PUTIO_SPACE_THRESHOLD_GB` with value `15`)
+
+
 
 You can also manually trigger the workflow from the Actions tab in your repository.
 

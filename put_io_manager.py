@@ -29,14 +29,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Constants
-DEFAULT_SPACE_THRESHOLD_GB = 10
-TRASH_CLEANUP_THRESHOLD_GB = 5  # Threshold for when to clean trash
-TRASH_CLEANUP_TARGET_GB = 5  # How much space to free up from trash
-MIN_TRASH_AGE_DAYS = 2  # Minimum age of files in trash to delete (in days)
-DELETABLE_FOLDERS = ["chill.institute", "putfirst"]
-MAX_RETRIES = 3
-RETRY_DELAY = 5  # seconds
+# Constants (configurable via environment variables)
+DEFAULT_SPACE_THRESHOLD_GB = float(os.environ.get("PUTIO_SPACE_THRESHOLD_GB", "10"))
+TRASH_CLEANUP_THRESHOLD_GB = float(os.environ.get("PUTIO_TRASH_CLEANUP_THRESHOLD_GB", "5"))  # Threshold for when to clean trash
+TRASH_CLEANUP_TARGET_GB = float(os.environ.get("PUTIO_TRASH_CLEANUP_TARGET_GB", "5"))  # How much space to free up from trash
+MIN_TRASH_AGE_DAYS = int(os.environ.get("PUTIO_MIN_TRASH_AGE_DAYS", "2"))  # Minimum age of files in trash to delete (in days)
+DELETABLE_FOLDERS = os.environ.get("PUTIO_DELETABLE_FOLDERS", "chill.institute,putfirst").split(",")
+MAX_RETRIES = int(os.environ.get("PUTIO_MAX_RETRIES", "3"))
+RETRY_DELAY = int(os.environ.get("PUTIO_RETRY_DELAY", "5"))  # seconds
 
 
 @dataclass

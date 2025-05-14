@@ -33,9 +33,17 @@ jobs:
         id: cleanup
         env:
           PUTIO_TOKEN: ${{ secrets.PUTIO_TOKEN }}
+          # Optional environment variables (uncomment and modify as needed)
+          # PUTIO_SPACE_THRESHOLD_GB: "10"
+          # PUTIO_TRASH_CLEANUP_THRESHOLD_GB: "5"
+          # PUTIO_TRASH_CLEANUP_TARGET_GB: "5"
+          # PUTIO_MIN_TRASH_AGE_DAYS: "2"
+          # PUTIO_DELETABLE_FOLDERS: "chill.institute,putfirst"
+          # PUTIO_MAX_RETRIES: "3"
+          # PUTIO_RETRY_DELAY: "5"
         run: |
           # Run script and capture output
-          OUTPUT=$(python put_io_manager.py --threshold 10 ${{ github.event.inputs.dry_run && '--dry-run' || '' }})
+          OUTPUT=$(python put_io_manager.py ${{ github.event.inputs.dry_run && '--dry-run' || '' }})
           
           # Extract key information
           DELETED_FILES=$(echo "$OUTPUT" | grep "^  - " || echo "None")
