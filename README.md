@@ -1,4 +1,4 @@
-# Put.io Storage Manager
+# Put.io Janitor
 
 A Python script that automatically manages storage on put.io by deleting oldest video files from designated folders when space falls below a threshold. **One-click deployment to GitHub Actions for automated, scheduled cleanup.**
 
@@ -49,16 +49,16 @@ pip install requests tus.py
 export PUTIO_TOKEN=your_api_token_here
 
 # Run with default settings (10 GB threshold)
-python put_io_manager.py
+python putio_janitor.py
 
 # Test without deleting any files (dry run)
-python put_io_manager.py --dry-run
+python putio_janitor.py --dry-run
 
 # Run with custom threshold
-python put_io_manager.py --threshold 15
+python putio_janitor.py --threshold 15
 
 # Enable debug logging
-python put_io_manager.py --debug
+python putio_janitor.py --debug
 ```
 
 ## GitHub Actions Integration

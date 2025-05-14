@@ -6,10 +6,10 @@ packages = ["openssl", "postgresql"]
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["sh", "-c", "python put_io_manager.py"]
+run = ["sh", "-c", "python putio_janitor.py"]
 
 [workflows]
-runButton = "Run Manager"
+runButton = "Run Janitor"
 
 [[workflows.workflow]]
 name = "Project"
@@ -49,6 +49,15 @@ mode = "sequential"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python put_io_manager.py --dry-run"
+
+[[workflows.workflow]]
+name = "Run Janitor"
+author = 38452143
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python putio_janitor.py --dry-run"
 
 [[ports]]
 localPort = 5000

@@ -1,5 +1,5 @@
 
-name: Put.io Storage Cleanup
+name: Put.io Janitor
 
 on:
   schedule:
@@ -29,7 +29,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests tus.py
 
-      - name: Run Put.io storage manager
+      - name: Run Put.io Janitor
         id: cleanup
         env:
           PUTIO_TOKEN: ${{ secrets.PUTIO_TOKEN }}
@@ -46,7 +46,7 @@ jobs:
           ${{ github.event.inputs.dry_run && 'export PUTIO_DRY_RUN=true' || '' }}
           
           # Run script and capture output
-          OUTPUT=$(python put_io_manager.py)
+          OUTPUT=$(python putio_janitor.py)
           
           # Extract key information
           DELETED_FILES=$(echo "$OUTPUT" | grep "^  - " || echo "None")
