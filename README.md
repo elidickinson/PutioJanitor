@@ -39,9 +39,9 @@ All settings can be configured using environment variables:
 |---|---|---|
 | `PUTIO_TOKEN` | **Required** - Your put.io API token | None |
 | `PUTIO_SPACE_THRESHOLD_GB` | Free space threshold in GB | 10 |
-| `PUTIO_TRASH_CLEANUP_THRESHOLD_GB` | When to clean trash (GB). Set to 0 to disable trash cleanup completely. | 0 |
+| `PUTIO_TRASH_CLEANUP_THRESHOLD_GB` | When to clean trash (GB). Set to 0 to disable trash cleanup completely. Only cleans trash when available space falls below this value. | 0 |
 | `PUTIO_TRASH_CLEANUP_TARGET_GB` | How much space to free from trash (GB) | 5 |
-| `PUTIO_MIN_TRASH_AGE_DAYS` | Minimum age of files in trash to delete | 2 |
+| `PUTIO_MIN_TRASH_AGE_DAYS` | Minimum age in days for files in trash before they can be deleted | 2 |
 | `PUTIO_DELETABLE_FOLDERS` | Comma-separated list of folders to manage | chill.institute,putfirst |
 | `PUTIO_MAX_RETRIES` | Maximum API call retry attempts | 3 |
 | `PUTIO_RETRY_DELAY` | Seconds between retry attempts | 5 |
@@ -120,6 +120,23 @@ You can now use environment variables:
 export PUTIO_SPACE_THRESHOLD_GB=15
 export PUTIO_DELETABLE_FOLDERS=movies,downloads
 python put_io_manager.py --dry-run
+```
+
+### Trash Management Example
+
+If you want files to remain in trash for at least a week before being deleted, and only clean trash when space gets low:
+
+```bash
+# Keep files in trash for at least 7 days
+export PUTIO_MIN_TRASH_AGE_DAYS=7
+
+# Enable trash cleanup when available space falls below 5 GB
+export PUTIO_TRASH_CLEANUP_THRESHOLD_GB=5
+
+# Target freeing up 10 GB when cleaning trash
+export PUTIO_TRASH_CLEANUP_TARGET_GB=10
+
+python putio_janitor.py
 ```
 
 This makes it easy to configure the script via GitHub Actions environment variables without changing the code.
