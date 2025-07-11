@@ -7,7 +7,7 @@ video files from designated folders when available space falls below a threshold
 It can also clean up old files from trash if needed.
 
 Usage:
-    python put_io_manager.py [--dry-run] [--threshold THRESHOLD_GB]
+    python putio_janitor.py [--dry-run]
 """
 
 import argparse
@@ -21,6 +21,13 @@ from typing import Dict, List, Tuple, Union
 
 import putiopy
 
+# Try to load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -30,11 +37,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Constants (configurable via environment variables)
-DEFAULT_SPACE_THRESHOLD_GB = float(os.environ.get("PUTIO_SPACE_THRESHOLD_GB", "10"))
-TRASH_CLEANUP_THRESHOLD_GB = float(os.environ.get("PUTIO_TRASH_CLEANUP_THRESHOLD_GB", "0"))  # Threshold for when to clean trash (0 means never clean trash)
-TRASH_CLEANUP_TARGET_GB = float(os.environ.get("PUTIO_TRASH_CLEANUP_TARGET_GB", "5"))  # How much space to free up from trash
+CRITICAL_THRESHOLD_GB = float(os.environ.get("PUTIO_CRITICAL_THRESHOLD_GB", "6"))  # Must have this much free (includes trash)
+COMFORT_THRESHOLD_GB = float(os.environ.get("PUTIO_COMFORT_THRESHOLD_GB", "10"))  # Target free space (excludes trash)
 MIN_TRASH_AGE_DAYS = int(os.environ.get("PUTIO_MIN_TRASH_AGE_DAYS", "2"))  # Minimum age of files in trash to delete (in days)
-DELETABLE_FOLDERS = os.environ.get("PUTIO_DELETABLE_FOLDERS", "chill.institute,putfirst").split(",")
+DELETABLE_FOLDERS = [f.strip() for f in os.environ.get("PUTIO_DELETABLE_FOLDERS", "chill.institute,putfirst").split(",") if f.strip()]
 MAX_RETRIES = int(os.environ.get("PUTIO_MAX_RETRIES", "3"))
 RETRY_DELAY = int(os.environ.get("PUTIO_RETRY_DELAY", "5"))  # seconds
 
@@ -55,17 +61,15 @@ class FileInfo:
 class PutioStorageManager:
     """Manages put.io storage by deleting oldest files when space is low"""
 
-    def __init__(self, token: str, threshold_gb: float = DEFAULT_SPACE_THRESHOLD_GB, dry_run: bool = False):
+    def __init__(self, token: str, dry_run: bool = False):
         """
         Initialize the put.io storage manager.
         
         Args:
             token: put.io API token
-            threshold_gb: Free space threshold in GB
             dry_run: If True, don't actually delete files
         """
         self.client = putiopy.Client(token, use_retry=True)
-        self.threshold_bytes = threshold_gb * (1024 ** 3)  # Convert GB to bytes
         self.dry_run = dry_run
         self.root_folder_ids = {}  # Mapping of folder names to IDs
         self.deleted_files = []
@@ -98,23 +102,28 @@ class PutioStorageManager:
             logger.error(f"Error getting account info: {e}")
             raise
 
-    def needs_cleanup(self, account_info, trash_size: int = 0) -> bool:
+    def get_cleanup_status(self, account_info) -> Tuple[bool, bool]:
         """
-        Check if cleanup is needed based on available space
+        Determine if cleanup is needed based on dual thresholds
         
         Args:
             account_info: Account information from get_account_info()
-            trash_size: Size of trash in bytes (optional, will be added to available space)
             
         Returns:
-            True if cleanup is needed
+            Tuple of (need_trash_cleanup, need_file_cleanup)
         """
-        # Calculate effective available space by adding trash size
-        effective_available = account_info['disk']['avail'] + trash_size
-        logger.debug(f"Effective available space: {self._format_size(effective_available)}")
+        avail = account_info['disk']['avail']
+        trash_size = account_info.get('trash_size', 0)
         
-        # Only need cleanup if effective available space is below threshold
-        return effective_available < self.threshold_bytes
+        # Critical: Must have 6GB free including trash
+        if avail < self.gb_to_bytes(CRITICAL_THRESHOLD_GB):
+            return (True, False)  # Clean trash first
+        
+        # Comfort: Want 10GB free excluding trash
+        if avail < self.gb_to_bytes(COMFORT_THRESHOLD_GB):
+            return (False, True)  # Clean files first
+            
+        return (False, False)  # No cleanup needed
     
     def find_deletable_folders(self) -> None:
         """Find and store IDs of the folders that are allowed to be cleaned up"""
@@ -209,9 +218,11 @@ class PutioStorageManager:
             files = self.get_files_in_folder(folder_id, folder_name)
             
             # Find individual video files (not in a subfolder with other videos)
+            # Only include files that are direct children of this root folder
             video_files = [f for f in files if f.is_video and f.parent_id == folder_id]
             
             # Find folders that contain videos (to delete as units)
+            # Only include folders that are direct children of this root folder
             video_folders = [f for f in files if f.is_folder and f.folder_has_video and f.parent_id == folder_id]
             
             # For individual video files, add them with None as the container
@@ -244,6 +255,12 @@ class PutioStorageManager:
         Returns:
             True if the file was deleted successfully
         """
+        # Safety check: Never delete folders with names matching deletable folder names
+        base_name = file_name.split(':')[1].strip() if 'Folder:' in file_name else file_name
+        if base_name in DELETABLE_FOLDERS:
+            logger.error(f"SAFETY: Attempted to delete protected folder {file_name} - BLOCKED")
+            return False
+            
         if self.dry_run:
             logger.info(f"[DRY RUN] Would delete: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
             self.deleted_files.append(file_name)
@@ -261,25 +278,25 @@ class PutioStorageManager:
             logger.error(f"Error deleting {file_name}: {e}")
             return False
 
-    def clean_up_space(self, account_info) -> bool:
+    def clean_up_space(self, account_info) -> int:
         """
-        Delete oldest files until free space is above threshold
+        Delete oldest files to reach comfort threshold
         
         Args:
             account_info: Account information from get_account_info()
             
         Returns:
-            True if cleanup was successful
+            Bytes freed
         """
-        # Calculate how much space needs to be freed
-        needed_space = self.threshold_bytes - account_info['disk']['avail']
-        logger.info(f"Need to free {self._format_size(needed_space)} to reach threshold")
+        # Calculate how much space needs to be freed to reach comfort threshold
+        needed_space = self.gb_to_bytes(COMFORT_THRESHOLD_GB) - account_info['disk']['avail']
+        logger.info(f"Need to free {self._format_size(needed_space)} to reach comfort threshold")
         
         # Find deletable folders
         self.find_deletable_folders()
         if not self.root_folder_ids:
             logger.error("No deletable folders found, cannot clean up space.")
-            return False
+            return 0
         
         # Collect files to delete
         deletable_items = self.collect_deletable_files()
@@ -287,7 +304,7 @@ class PutioStorageManager:
         
         if not deletable_items:
             logger.warning("No deletable files found in the specified folders.")
-            return False
+            return 0
         
         # Delete files/folders until we've freed enough space
         freed_space = 0
@@ -304,31 +321,9 @@ class PutioStorageManager:
                 if self.delete_file(video_file.id, video_file.name, video_file.size):
                     freed_space += video_file.size
         
-        logger.info(f"Freed {self._format_size(freed_space)} of space")
-        
-        # Return success only if we've freed enough space
-        return freed_space >= needed_space
+        logger.info(f"Freed {self._format_size(freed_space)} from files")
+        return freed_space
     
-    def needs_trash_cleanup(self, account_info) -> bool:
-        """
-        Check if trash cleanup is needed based on available space
-        
-        Args:
-            account_info: Account information from get_account_info()
-            
-        Returns:
-            True if trash cleanup is needed
-        """
-        # If trash cleanup threshold is 0, never clean trash
-        if TRASH_CLEANUP_THRESHOLD_GB <= 0:
-            return False
-            
-        # Get available space and trash size
-        avail_space = account_info['disk']['avail']
-        trash_size = account_info.get('trash_size', 0)
-        
-        # Check if available space is below threshold and trash has files
-        return avail_space < self.gb_to_bytes(TRASH_CLEANUP_THRESHOLD_GB) and trash_size > 0
     
     def get_trash_files(self) -> List[Dict]:
         """
@@ -364,6 +359,11 @@ class PutioStorageManager:
         Returns:
             True if the file was deleted successfully
         """
+        # Safety check: Never delete items with names matching deletable folder names
+        if file_name in DELETABLE_FOLDERS:
+            logger.error(f"SAFETY: Attempted to delete protected folder {file_name} from trash - BLOCKED")
+            return False
+            
         if self.dry_run:
             logger.info(f"[DRY RUN] Would permanently delete from trash: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
             self.deleted_files.append(f"Trash: {file_name}")
@@ -381,34 +381,32 @@ class PutioStorageManager:
             logger.error(f"Error deleting {file_name} from trash: {e}")
             return False
     
-    def clean_up_trash(self, account_info) -> bool:
+    def clean_up_trash(self, account_info) -> int:
         """
-        Clean up trash by permanently deleting oldest files
+        Clean trash to reach critical threshold
         
         Args:
             account_info: Account information from get_account_info()
             
         Returns:
-            True if cleanup was successful
+            Bytes freed
         """
-        # Get available space and trash size
         avail_space = account_info['disk']['avail']
         trash_size = account_info.get('trash_size', 0)
         
-        # Calculate target space to free (to reach TRASH_CLEANUP_TARGET_GB)
-        trash_target_bytes = self.gb_to_bytes(TRASH_CLEANUP_TARGET_GB)
-        needed_space = max(0, trash_target_bytes - avail_space)
+        # Need to reach critical threshold
+        needed_space = self.gb_to_bytes(CRITICAL_THRESHOLD_GB) - avail_space
         
         logger.info(f"Current available space: {self._format_size(avail_space)}")
         logger.info(f"Current trash size: {self._format_size(trash_size)}")
-        logger.info(f"Need to free {self._format_size(needed_space)} from trash to reach target")
+        logger.info(f"Need to free {self._format_size(needed_space)} from trash to reach critical threshold")
         
         # Get files in trash
         trash_files = self.get_trash_files()
         
         if not trash_files:
             logger.warning("No files found in trash.")
-            return False
+            return 0
         
         # Calculate the minimum date for files to be eligible for deletion
         min_date = datetime.now() - timedelta(days=MIN_TRASH_AGE_DAYS)
@@ -423,7 +421,7 @@ class PutioStorageManager:
         
         if not eligible_files:
             logger.warning("No eligible files found in trash to delete.")
-            return False
+            return 0
         
         # Sort files by creation date (oldest first)
         eligible_files.sort(key=lambda x: putiopy.strptime(x['created_at']))
@@ -438,9 +436,7 @@ class PutioStorageManager:
                 freed_space += file['size']
         
         logger.info(f"Freed {self._format_size(freed_space)} from trash")
-        
-        # Return success only if we've freed enough space
-        return freed_space >= needed_space
+        return freed_space
     
     def run(self) -> None:
         """Run the storage manager to check and clean up space if needed"""
@@ -448,39 +444,27 @@ class PutioStorageManager:
             # Get account info
             account_info = self.get_account_info()
             
-            # Get trash size from account info
-            trash_size = account_info.get('trash_size', 0)  
+            # Determine what cleanup is needed
+            need_trash, need_files = self.get_cleanup_status(account_info)
             
-            # Calculate effective available space (including trash)
-            effective_avail = account_info['disk']['avail'] + trash_size
-            logger.info(f"Effective available space (including trash): {self._format_size(effective_avail)}")
-            
-            # Check if trash cleanup is needed first (less than 5GB free and trash has files)
-            if self.needs_trash_cleanup(account_info):
-                logger.info(f"Available space ({self._format_size(account_info['disk']['avail'])}) is below trash cleanup threshold ({self._format_size(TRASH_CLEANUP_THRESHOLD_GB * (1024 ** 3))}), attempting to clean trash")
-                trash_success = self.clean_up_trash(account_info)
-                
-                if trash_success and not self.dry_run:
-                    # Get updated account info after trash cleanup
-                    account_info = self.get_account_info()
-                    logger.info(f"Updated free space after trash cleanup: {self._format_size(account_info['disk']['avail'])}")
-            
-            # Check if cleanup is still needed based on effective available space 
-            # (we include trash in calculation since it could be freed)
-            trash_size = account_info.get('trash_size', 0)
-            if not self.needs_cleanup(account_info, trash_size):
-                logger.info(f"Effective free space ({self._format_size(account_info['disk']['avail'] + trash_size)}) is above threshold ({self._format_size(self.threshold_bytes)}), no cleanup needed.")
-                
-                # Print summary of any trash deletions
-                if self.deleted_files:
-                    logger.info(f"Deleted {len(self.deleted_files)} files/folders, freed {self._format_size(self.bytes_freed)}")
-                    for file in self.deleted_files:
-                        logger.info(f"  - {file}")
-                
+            if not need_trash and not need_files:
+                logger.info("No cleanup needed - sufficient free space available")
                 return
             
-            # Clean up space from regular files if still needed
-            success = self.clean_up_space(account_info)
+            # Handle critical situation - clean trash first
+            if need_trash:
+                logger.info(f"Critical: Available space below {CRITICAL_THRESHOLD_GB}GB, cleaning trash first")
+                trash_freed = self.clean_up_trash(account_info)
+                
+                if not self.dry_run and trash_freed > 0:
+                    # Refresh account info
+                    account_info = self.get_account_info()
+                    need_trash, need_files = self.get_cleanup_status(account_info)
+            
+            # Clean files if still needed
+            if need_files:
+                logger.info("Below comfort threshold (10GB), cleaning files")
+                self.clean_up_space(account_info)
             
             # Print summary
             if self.deleted_files:
@@ -488,15 +472,10 @@ class PutioStorageManager:
                 for file in self.deleted_files:
                     logger.info(f"  - {file}")
             
-            # Get updated account info if not in dry run
-            if not self.dry_run:
-                updated_account = self.get_account_info()
-                logger.info(f"Updated free space: {self._format_size(updated_account['disk']['avail'])}")
-            
-            if not success:
-                logger.warning("Could not free enough space to reach threshold")
-                if not self.dry_run:
-                    sys.exit(1)
+            # Get final status if not in dry run
+            if not self.dry_run and self.deleted_files:
+                final_account = self.get_account_info()
+                logger.info(f"Final free space: {self._format_size(final_account['disk']['avail'])}")
         
         except Exception as e:
             logger.error(f"Error running storage manager: {e}", exc_info=True)
@@ -519,8 +498,6 @@ def main():
     """Main function to parse arguments and run the storage manager"""
     parser = argparse.ArgumentParser(description="Manage put.io storage by deleting oldest files when space is low")
     parser.add_argument("--dry-run", action="store_true", help="Don't actually delete files, just log what would happen")
-    parser.add_argument("--threshold", type=float, default=DEFAULT_SPACE_THRESHOLD_GB, 
-                      help=f"Free space threshold in GB (default: {DEFAULT_SPACE_THRESHOLD_GB})")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
     
@@ -529,22 +506,43 @@ def main():
         logger.setLevel(logging.DEBUG)
     
     # Get API token from environment variable
-    token = os.environ.get("PUTIO_TOKEN")
+    token = os.environ.get("PUTIO_TOKEN", "").strip()
     if not token:
-        logger.error("PUTIO_TOKEN environment variable is not set")
+        logger.error("ERROR: PUTIO_TOKEN environment variable is not set or is empty")
+        logger.error("Please set your put.io API token:")
+        logger.error("  export PUTIO_TOKEN=your_api_token_here")
+        logger.error("Or create a .env file with:")
+        logger.error("  PUTIO_TOKEN=your_api_token_here")
         sys.exit(1)
     
     # Determine if we should use dry run mode (CLI arg overrides env var)
     dry_run = args.dry_run or os.environ.get("PUTIO_DRY_RUN", "").lower() in ("true", "1", "yes")
     
+    # Validate configuration (only check logic, not existence since they have defaults)
+    if CRITICAL_THRESHOLD_GB <= 0:
+        logger.error("ERROR: Critical threshold must be greater than 0")
+        logger.error(f"  Current value: {CRITICAL_THRESHOLD_GB} GB")
+        sys.exit(1)
+    
+    if COMFORT_THRESHOLD_GB <= CRITICAL_THRESHOLD_GB:
+        logger.error("ERROR: Comfort threshold must be greater than critical threshold")
+        logger.error(f"  Critical threshold: {CRITICAL_THRESHOLD_GB} GB")
+        logger.error(f"  Comfort threshold: {COMFORT_THRESHOLD_GB} GB")
+        sys.exit(1)
+    
+    if not DELETABLE_FOLDERS:
+        logger.warning("WARNING: No deletable folders specified, using defaults may not work")
+        logger.warning("Consider setting PUTIO_DELETABLE_FOLDERS to folders that exist in your account")
+    
     # Log startup information
     logger.info(f"Starting put.io storage manager")
-    logger.info(f"Threshold: {args.threshold} GB")
+    logger.info(f"Critical threshold: {CRITICAL_THRESHOLD_GB} GB (must have this much free)")
+    logger.info(f"Comfort threshold: {COMFORT_THRESHOLD_GB} GB (target free space)")
     logger.info(f"Dry run: {dry_run}")
     logger.info(f"Deletable folders: {', '.join(DELETABLE_FOLDERS)}")
     
     # Create and run the storage manager
-    manager = PutioStorageManager(token, args.threshold, dry_run)
+    manager = PutioStorageManager(token, dry_run)
     manager.run()
 
 

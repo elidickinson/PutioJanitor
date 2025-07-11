@@ -38,18 +38,41 @@ All settings can be configured using environment variables:
 | Environment Variable | Description | Default Value |
 |---|---|---|
 | `PUTIO_TOKEN` | **Required** - Your put.io API token | None |
-| `PUTIO_SPACE_THRESHOLD_GB` | Free space threshold in GB | 10 |
-| `PUTIO_TRASH_CLEANUP_THRESHOLD_GB` | When to clean trash (GB). Set to 0 to disable trash cleanup completely. Only cleans trash when available space falls below this value. | 0 |
-| `PUTIO_TRASH_CLEANUP_TARGET_GB` | How much space to free from trash (GB) | 5 |
-| `PUTIO_MIN_TRASH_AGE_DAYS` | Minimum age in days for files in trash before they can be deleted | 2 |
+| `PUTIO_CRITICAL_THRESHOLD_GB` | Minimum free space required at all times | 6 |
+| `PUTIO_COMFORT_THRESHOLD_GB` | Target free space for normal operation | 10 |
+| `PUTIO_MIN_TRASH_AGE_DAYS` | Minimum age of files in trash to delete | 2 |
 | `PUTIO_DELETABLE_FOLDERS` | Comma-separated list of folders to manage | chill.institute,putfirst |
 | `PUTIO_MAX_RETRIES` | Maximum API call retry attempts | 3 |
 | `PUTIO_RETRY_DELAY` | Seconds between retry attempts | 5 |
 | `PUTIO_DRY_RUN` | Set to "true" to run without deleting files | false |
 
-## Manual Usage
+## Local Usage
 
-If you prefer to run the script manually:
+### Using a .env file (recommended for local development)
+
+1. Create a `.env` file in the project directory:
+```bash
+# .env
+PUTIO_TOKEN=your_api_token_here
+PUTIO_CRITICAL_THRESHOLD_GB=6
+PUTIO_COMFORT_THRESHOLD_GB=10
+PUTIO_DELETABLE_FOLDERS=chill.institute,putfirst
+PUTIO_DRY_RUN=true  # Remove this when ready to delete files
+```
+
+2. Install requirements:
+```bash
+pip install requests tus.py python-dotenv
+```
+
+3. Run the script:
+```bash
+python putio_janitor.py
+```
+
+### Manual Usage (without .env)
+
+If you prefer to run the script manually with environment variables:
 
 ```bash
 # Install requirements
@@ -58,14 +81,11 @@ pip install requests tus.py
 # Set your API token
 export PUTIO_TOKEN=your_api_token_here
 
-# Run with default settings (10 GB threshold)
+# Run with default settings
 python putio_janitor.py
 
 # Test without deleting any files (dry run)
 python putio_janitor.py --dry-run
-
-# Run with custom threshold
-python putio_janitor.py --threshold 15
 
 # Enable debug logging
 python putio_janitor.py --debug
@@ -112,14 +132,14 @@ The script prioritizes environment variables over command-line arguments when bo
 
 For example, instead of running:
 ```bash
-python put_io_manager.py --threshold 15 --dry-run
+python putio_janitor.py --dry-run
 ```
 
 You can now use environment variables:
 ```bash
-export PUTIO_SPACE_THRESHOLD_GB=15
+export PUTIO_COMFORT_THRESHOLD_GB=15
 export PUTIO_DELETABLE_FOLDERS=movies,downloads
-python put_io_manager.py --dry-run
+python putio_janitor.py --dry-run
 ```
 
 ### Trash Management Example
