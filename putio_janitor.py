@@ -438,12 +438,8 @@ class PutioStorageManager:
         logger.info(f"Freed {self._format_size(freed_space)} from trash")
         return freed_space
     
-    def run(self) -> dict:
-        """Run the storage manager to check and clean up space if needed
-        
-        Returns:
-            dict: Summary of the cleanup operation
-        """
+    def run(self) -> None:
+        """Run the storage manager to check and clean up space if needed"""
         try:
             # Get account info
             account_info = self.get_account_info()
@@ -453,14 +449,7 @@ class PutioStorageManager:
             
             if not need_trash and not need_files:
                 logger.info("No cleanup needed - sufficient free space available")
-                return {
-                    "cleanup_needed": False,
-                    "initial_free_space_gb": account_info['disk']['avail'] / 1024**3,
-                    "initial_trash_size_gb": account_info.get('trash_size', 0) / 1024**3,
-                    "deleted_files": [],
-                    "bytes_freed": 0,
-                    "final_free_space_gb": account_info['disk']['avail'] / 1024**3
-                }
+                return
             
             # Handle critical situation - clean trash first
             if need_trash:
@@ -483,26 +472,10 @@ class PutioStorageManager:
                 for file in self.deleted_files:
                     logger.info(f"  - {file}")
             
-            # Get final status
-            final_account = account_info  # Use last known if dry run
+            # Get final status if not in dry run
             if not self.dry_run and self.deleted_files:
                 final_account = self.get_account_info()
                 logger.info(f"Final free space: {self._format_size(final_account['disk']['avail'])}")
-            
-            # Create summary
-            summary = {
-                "cleanup_needed": True,
-                "initial_free_space_gb": account_info['disk']['avail'] / 1024**3,
-                "initial_trash_size_gb": account_info.get('trash_size', 0) / 1024**3,
-                "deleted_files": self.deleted_files,
-                "bytes_freed": self.bytes_freed,
-                "bytes_freed_formatted": self._format_size(self.bytes_freed),
-                "final_free_space_gb": final_account['disk']['avail'] / 1024**3,
-                "final_trash_size_gb": final_account.get('trash_size', 0) / 1024**3,
-                "dry_run": self.dry_run
-            }
-            
-            return summary
         
         except Exception as e:
             logger.error(f"Error running storage manager: {e}", exc_info=True)
@@ -526,7 +499,6 @@ def main():
     parser = argparse.ArgumentParser(description="Manage put.io storage by deleting oldest files when space is low")
     parser.add_argument("--dry-run", action="store_true", help="Don't actually delete files, just log what would happen")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--json", action="store_true", help="Output summary in JSON format")
     args = parser.parse_args()
     
     # Set logging level
@@ -571,14 +543,7 @@ def main():
     
     # Create and run the storage manager
     manager = PutioStorageManager(token, dry_run)
-    summary = manager.run()
-    
-    # Output JSON summary if requested
-    if args.json and summary:
-        import json
-        print("\n---JSON-SUMMARY-START---")
-        print(json.dumps(summary, indent=2))
-        print("---JSON-SUMMARY-END---")
+    manager.run()
 
 
 if __name__ == "__main__":

@@ -14,12 +14,7 @@ on:
 
 jobs:
   cleanup:
-    name: Storage Cleanup
     runs-on: ubuntu-latest
-    outputs:
-      deleted_files: ${{ steps.cleanup.outputs.deleted_files }}
-      files_count: ${{ steps.cleanup.outputs.files_count }}
-      space_freed: ${{ steps.cleanup.outputs.space_freed }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -48,131 +43,61 @@ jobs:
           # PUTIO_RETRY_DELAY: "5"
         run: |
           # Set dry run mode based on inputs
-          ${{ github.event.inputs.dry_run && 'export PUTIO_DRY_RUN=true' || '' }}
-          
-          # Run script and capture output (with JSON summary)
-          OUTPUT=$(python putio_janitor.py --json)
-          
-          # Extract JSON summary from output
-          JSON_SUMMARY=$(echo "$OUTPUT" | sed -n '/---JSON-SUMMARY-START---/,/---JSON-SUMMARY-END---/p' | sed '1d;$d')
-          
-          # Parse JSON data using Python
-          if [ -n "$JSON_SUMMARY" ]; then
-            SUMMARY_DATA=$(python3 -c "
-          import json
-          import sys
-          data = json.loads('''$JSON_SUMMARY''')
-          
-          # Extract data
-          files_deleted = data.get('deleted_files', [])
-          bytes_freed = data.get('bytes_freed_formatted', 'No space freed')
-          initial_free = data.get('initial_free_space_gb', 0)
-          final_free = data.get('final_free_space_gb', 0)
-          trash_size = data.get('initial_trash_size_gb', 0)
-          
-          print(f'FILES_DELETED={len(files_deleted)}')
-          print(f'BYTES_FREED={bytes_freed}')
-          print(f'INITIAL_FREE={initial_free:.2f}')
-          print(f'FINAL_FREE={final_free:.2f}')
-          print(f'TRASH_SIZE={trash_size:.2f}')
-          print(f'CLEANUP_NEEDED={data.get(\"cleanup_needed\", False)}')
-          
-          # Print file list
-          if files_deleted:
-            print('DELETED_FILES_LIST=')
-            for f in files_deleted:
-              print(f'  - {f}')
-          else:
-            print('DELETED_FILES_LIST=None')
-          ")
-            eval "$SUMMARY_DATA"
-          else
-            # Fallback to old method if JSON not available
-            DELETED_FILES_LIST=$(echo "$OUTPUT" | grep " -   - " || echo "None")
-            BYTES_FREED=$(echo "$OUTPUT" | grep "Deleted [0-9]* files/folders, freed" | tail -n1 || echo "No space freed")
-            FILES_DELETED=0
-            CLEANUP_NEEDED=false
+          if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+            export PUTIO_DRY_RUN=true
           fi
           
-          # Create a detailed summary file
-          echo "### 🧹 Storage Cleanup Summary" > $GITHUB_STEP_SUMMARY
+          # Run script and capture output
+          OUTPUT=$(python putio_janitor.py)
+          
+          # Extract key information from output
+          DELETED_FILES=$(echo "$OUTPUT" | grep " -   - " || echo "")
+          SUMMARY_LINE=$(echo "$OUTPUT" | grep "Deleted [0-9]* files/folders, freed" || echo "")
+          NO_CLEANUP=$(echo "$OUTPUT" | grep "No cleanup needed" || echo "")
+          
+          # Count deleted files
+          if [ -n "$DELETED_FILES" ]; then
+            FILES_COUNT=$(echo "$DELETED_FILES" | wc -l)
+          else
+            FILES_COUNT=0
+          fi
+          
+          # Create a simple summary
+          echo "### Storage Cleanup Summary" > $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Run Type:** ${{ github.event.inputs.dry_run && '🔍 Dry Run' || '🚀 Production' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Type:** ${{ github.event.inputs.dry_run && 'Dry Run' || 'Production' }}" >> $GITHUB_STEP_SUMMARY
           echo "**Date:** $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Storage status
-          echo "#### 💾 Storage Status" >> $GITHUB_STEP_SUMMARY
-          if [ -n "$INITIAL_FREE" ] && [ -n "$FINAL_FREE" ]; then
-            echo "- **Initial Free Space:** ${INITIAL_FREE} GB" >> $GITHUB_STEP_SUMMARY
-            echo "- **Final Free Space:** ${FINAL_FREE} GB" >> $GITHUB_STEP_SUMMARY
-            echo "- **Trash Size:** ${TRASH_SIZE} GB" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          # Cleanup results
-          echo "#### 📊 Cleanup Results" >> $GITHUB_STEP_SUMMARY
-          if [ "$FILES_DELETED" -gt 0 ]; then
-            echo "- **Files Deleted:** $FILES_DELETED" >> $GITHUB_STEP_SUMMARY
-            echo "- **Space Freed:** $BYTES_FREED" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "<details>" >> $GITHUB_STEP_SUMMARY
-            echo "<summary>🗑️ Deleted Files List</summary>" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "$DELETED_FILES_LIST" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "</details>" >> $GITHUB_STEP_SUMMARY
-          else
+          if [ -n "$NO_CLEANUP" ]; then
             echo "✅ No cleanup needed - sufficient free space available" >> $GITHUB_STEP_SUMMARY
+          elif [ "$FILES_COUNT" -gt 0 ]; then
+            echo "**Files Deleted:** $FILES_COUNT" >> $GITHUB_STEP_SUMMARY
+            if [ -n "$SUMMARY_LINE" ]; then
+              echo "**Result:** $SUMMARY_LINE" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Deleted Files:**" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "$DELETED_FILES" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Script ran but no files were processed" >> $GITHUB_STEP_SUMMARY
           fi
           
           # Set outputs for job summary
-          if [ "$FILES_DELETED" -gt 0 ]; then
+          if [ "$FILES_COUNT" -gt 0 ]; then
             echo "deleted_files=true" >> $GITHUB_OUTPUT
-            echo "files_count=$FILES_DELETED" >> $GITHUB_OUTPUT
-            echo "space_freed=$BYTES_FREED" >> $GITHUB_OUTPUT
           else
             echo "deleted_files=false" >> $GITHUB_OUTPUT
-            echo "files_count=0" >> $GITHUB_OUTPUT
-            echo "space_freed=None" >> $GITHUB_OUTPUT
           fi
           
-          # Add threshold information
+          # Show full script output for debugging
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### ⚙️ Configuration" >> $GITHUB_STEP_SUMMARY
-          echo "- **Critical Threshold:** ${PUTIO_CRITICAL_THRESHOLD_GB} GB" >> $GITHUB_STEP_SUMMARY
-          echo "- **Comfort Threshold:** ${PUTIO_COMFORT_THRESHOLD_GB} GB" >> $GITHUB_STEP_SUMMARY
-          echo "- **Deletable Folders:** ${PUTIO_DELETABLE_FOLDERS}" >> $GITHUB_STEP_SUMMARY
+          echo "**Script Output:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "$OUTPUT" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           
           # Exit with original output
           echo "$OUTPUT"
-      
-      - name: Update run name
-        if: always()
-        run: |
-          if [[ "${{ steps.cleanup.outputs.deleted_files }}" == "true" ]]; then
-            echo "name=🗑️ Cleanup - Files Deleted" >> $GITHUB_OUTPUT
-          else
-            echo "name=✓ Cleanup - No Action Needed" >> $GITHUB_OUTPUT
-          fi
-  
-  # Summary job that shows status in the checks list
-  summary:
-    name: |
-      ${{ needs.cleanup.outputs.deleted_files == 'true' && 
-          format('🗑️ Deleted {0} files, freed {1}', needs.cleanup.outputs.files_count, needs.cleanup.outputs.space_freed) || 
-          '✅ No cleanup needed' }}
-    needs: cleanup
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Summary Status
-        run: |
-          if [[ "${{ needs.cleanup.outputs.deleted_files }}" == "true" ]]; then
-            echo "✅ Cleanup completed successfully"
-            echo "Files deleted: ${{ needs.cleanup.outputs.files_count }}"
-            echo "Space freed: ${{ needs.cleanup.outputs.space_freed }}"
-          else
-            echo "✅ No cleanup was needed - sufficient free space available"
-          fi
