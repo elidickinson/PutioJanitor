@@ -1,16 +1,18 @@
 # Put.io Janitor
 
-A Python script that automatically manages storage on put.io by deleting oldest video files from designated folders when free space falls below a threshold. **Nothing to install - it can run as a Github Action for free.**
+A Python script that automatically manages storage on put.io using a dual-threshold approach. **Nothing to install - it can run as a Github Action for free.**
 
 ## Features
 
 - Simple GitHub Actions deployment
-- Automatically maintains free space on your put.io account (default: 10 GB)
+
+- **Critical Threshold**: Ensures minimum free space by permanently deleting files
+- **Comfort Threshold**: Keeps non-trash files below target levels by moving to trash
 - Configurable via environment variables - no code changes needed
-- Limited to certain files (default: "chill.institute" and "putfirst"
+- Limited to certain files (default: "chill.institute" and "putfirst")
 - Deletes oldest files first, based on creation date
 - Treats subfolders containing movie files as complete units (deletes entire folder)
-- Optionally also purge files from trash (disabled by default)
+- Intelligent trash management with automatic permanent deletion
 
 ## Quick Start: Deploy to GitHub Actions
 
@@ -31,6 +33,27 @@ A Python script that automatically manages storage on put.io by deleting oldest 
 3. Add a new repository secret named `PUTIO_TOKEN` with your put.io OAuth Token
 4. That's it! The workflow will run daily at 10:00 UTC (5:00 AM Eastern Time). Note it only looks in directories "chill.institute" and "putfirst" by default.
 
+## How It Works
+
+The script uses a two thresholds to manage storage: a critical threshold to maintain enough free space for downloads and a "comfort" threshold to try to move files to the Trash ahead of deleting them.
+
+### Critical Threshold (Default: 6GB)
+- **Purpose**: Ensures minimum free space is always available
+- **Includes trash** in the free space calculation
+- **Action**: Permanently deletes files (not just moving to trash)
+- **Priority**: First cleans old files from trash, then from folders if needed
+
+### Comfort Threshold (Default: 10GB)
+- **Purpose**: Keeps your active file collection organized
+- **Excludes trash** - only counts non-trash files
+- **Action**: Moves files to trash (not permanent deletion)
+- **Priority**: Runs only after critical threshold is satisfied
+
+### Example
+In a 100GB account with 98GB in files, 6GB critical threshold, and 10GB comfort threshold:
+1. **Critical cleanup**: Permanently delete ~2GB of files (first from trash, then from folders) to have 6GB free
+2. **Comfort cleanup**: Move ~4GB of remaining files to trash to keep non-trash files below 90GB
+
 ## Configuration
 
 All settings can be configured using environment variables:
@@ -38,9 +61,9 @@ All settings can be configured using environment variables:
 | Environment Variable | Description | Default Value |
 |---|---|---|
 | `PUTIO_TOKEN` | **Required** - Your put.io API token | None |
-| `PUTIO_CRITICAL_THRESHOLD_GB` | Minimum free space required at all times | 6 |
-| `PUTIO_COMFORT_THRESHOLD_GB` | Target free space for normal operation | 10 |
-| `PUTIO_MIN_TRASH_AGE_DAYS` | Minimum age of files in trash to delete | 2 |
+| `PUTIO_CRITICAL_THRESHOLD_GB` | Minimum free space required (includes trash) | 6 |
+| `PUTIO_COMFORT_THRESHOLD_GB` | Target maximum for non-trash files | 10 |
+
 | `PUTIO_DELETABLE_FOLDERS` | Comma-separated list of folders to manage | chill.institute,putfirst |
 | `PUTIO_MAX_RETRIES` | Maximum API call retry attempts | 3 |
 | `PUTIO_RETRY_DELAY` | Seconds between retry attempts | 5 |
@@ -142,21 +165,25 @@ export PUTIO_DELETABLE_FOLDERS=movies,downloads
 python putio_janitor.py --dry-run
 ```
 
-### Trash Management Example
+### Configuration Examples
 
-If you want files to remain in trash for at least a week before being deleted, and only clean trash when space gets low:
-
+**Conservative Setup** (keep more files):
 ```bash
-# Keep files in trash for at least 7 days
-export PUTIO_MIN_TRASH_AGE_DAYS=7
+export PUTIO_CRITICAL_THRESHOLD_GB=8   # Require more free space
+export PUTIO_COMFORT_THRESHOLD_GB=15  # Allow more active files
+```
 
-# Enable trash cleanup when available space falls below 5 GB
-export PUTIO_TRASH_CLEANUP_THRESHOLD_GB=5
+**Aggressive Setup** (faster cleanup, less space usage):
+```bash
+export PUTIO_CRITICAL_THRESHOLD_GB=4   # Less free space required
+export PUTIO_COMFORT_THRESHOLD_GB=8   # Fewer active files allowed
+```
 
-# Target freeing up 10 GB when cleaning trash
-export PUTIO_TRASH_CLEANUP_TARGET_GB=10
-
-python putio_janitor.py
+**Large Account Setup** (for 500GB+ accounts):
+```bash
+export PUTIO_CRITICAL_THRESHOLD_GB=10  # Higher critical threshold
+export PUTIO_COMFORT_THRESHOLD_GB=50  # More space for active files
+export PUTIO_DELETABLE_FOLDERS=movies,downloads,4k  # Manage more folders
 ```
 
 This makes it easy to configure the script via GitHub Actions environment variables without changing the code.

@@ -2,9 +2,14 @@
 """
 put.io Storage Manager
 
-This script manages storage on put.io by automatically deleting oldest
-video files from designated folders when available space falls below a threshold.
-It can also clean up old files from trash if needed.
+This script manages storage on put.io using a dual-threshold approach:
+
+1. Critical Threshold: Must maintain minimum free space (includes trash)
+   - First permanently deletes old files from trash
+   - Then permanently deletes files from folders if needed
+   
+2. Comfort Threshold: Keeps non-trash files below target level
+   - Moves files to trash (not permanent deletion)
 
 Usage:
     python putio_janitor.py [--dry-run]
@@ -16,7 +21,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Tuple, Union
 
 import putiopy
@@ -37,9 +42,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Constants (configurable via environment variables)
-CRITICAL_THRESHOLD_GB = float(os.environ.get("PUTIO_CRITICAL_THRESHOLD_GB", "6"))  # Must have this much free (includes trash)
-COMFORT_THRESHOLD_GB = float(os.environ.get("PUTIO_COMFORT_THRESHOLD_GB", "10"))  # Target free space (excludes trash)
-MIN_TRASH_AGE_DAYS = int(os.environ.get("PUTIO_MIN_TRASH_AGE_DAYS", "2"))  # Minimum age of files in trash to delete (in days)
+CRITICAL_THRESHOLD_GB = float(os.environ.get("PUTIO_CRITICAL_THRESHOLD_GB", "6"))  # Minimum free space required (includes trash)
+COMFORT_THRESHOLD_GB = float(os.environ.get("PUTIO_COMFORT_THRESHOLD_GB", "10"))  # Target maximum for non-trash files
 DELETABLE_FOLDERS = [f.strip() for f in os.environ.get("PUTIO_DELETABLE_FOLDERS", "chill.institute,putfirst").split(",") if f.strip()]
 MAX_RETRIES = int(os.environ.get("PUTIO_MAX_RETRIES", "3"))
 RETRY_DELAY = int(os.environ.get("PUTIO_RETRY_DELAY", "5"))  # seconds
@@ -72,8 +76,10 @@ class PutioStorageManager:
         self.client = putiopy.Client(token, use_retry=True)
         self.dry_run = dry_run
         self.root_folder_ids = {}  # Mapping of folder names to IDs
-        self.deleted_files = []
-        self.bytes_freed = 0
+        self.moved_to_trash = []  # Files moved to trash
+        self.bytes_moved_to_trash = 0
+        self.permanently_deleted = []  # Files permanently deleted
+        self.bytes_permanently_deleted = 0
         self.gb_to_bytes = lambda gb: gb * (1024 ** 3)
         
     def get_account_info(self) -> Dict:
@@ -104,24 +110,40 @@ class PutioStorageManager:
 
     def get_cleanup_status(self, account_info) -> Tuple[bool, bool]:
         """
-        Determine if cleanup is needed based on dual thresholds
+        Determine if cleanup is needed based on unified threshold logic
         
         Args:
             account_info: Account information from get_account_info()
             
         Returns:
-            Tuple of (need_trash_cleanup, need_file_cleanup)
+            Tuple of (need_critical_cleanup, need_comfort_cleanup)
         """
         avail = account_info['disk']['avail']
+        total_disk = account_info['disk']['size']
         trash_size = account_info.get('trash_size', 0)
+        used_space = account_info['disk']['used']
         
-        # Critical: Must have 6GB free including trash
+        # Calculate non-trash file usage
+        non_trash_used = used_space - trash_size
+        
+        logger.info(f"Account status: {self._format_size(avail)} available, "
+                   f"{self._format_size(non_trash_used)} in files, "
+                   f"{self._format_size(trash_size)} in trash")
+        
+        # Critical threshold: Must have CRITICAL_THRESHOLD_GB free space (includes trash)
+        # This is about total available space, regardless of what's in trash
         if avail < self.gb_to_bytes(CRITICAL_THRESHOLD_GB):
-            return (True, False)  # Clean trash first
+            needed_critical = self.gb_to_bytes(CRITICAL_THRESHOLD_GB) - avail
+            logger.info(f"Critical threshold not met: need {self._format_size(needed_critical)} more free space")
+            return (True, False)
         
-        # Comfort: Want 10GB free excluding trash
-        if avail < self.gb_to_bytes(COMFORT_THRESHOLD_GB):
-            return (False, True)  # Clean files first
+        # Comfort threshold: Want COMFORT_THRESHOLD_GB of non-trash files
+        # This is about keeping file usage below a certain level
+        comfort_limit = total_disk - self.gb_to_bytes(COMFORT_THRESHOLD_GB)
+        if non_trash_used > comfort_limit:
+            needed_comfort = non_trash_used - comfort_limit
+            logger.info(f"Comfort threshold not met: need to move {self._format_size(needed_comfort)} to trash")
+            return (False, True)
             
         return (False, False)  # No cleanup needed
     
@@ -243,17 +265,17 @@ class PutioStorageManager:
         
         return all_deletable_files
 
-    def delete_file(self, file_id: int, file_name: str, file_size: int) -> bool:
+    def move_to_trash(self, file_id: int, file_name: str, file_size: int) -> bool:
         """
-        Delete a file or folder from put.io
+        Move a file or folder to trash on put.io
         
         Args:
-            file_id: ID of the file/folder to delete
+            file_id: ID of the file/folder to move to trash
             file_name: Name of the file/folder for logging
             file_size: Size of the file for tracking freed space
             
         Returns:
-            True if the file was deleted successfully
+            True if the file was moved to trash successfully
         """
         # Safety check: Never delete folders with names matching deletable folder names
         base_name = file_name.split(':')[1].strip() if 'Folder:' in file_name else file_name
@@ -262,20 +284,20 @@ class PutioStorageManager:
             return False
             
         if self.dry_run:
-            logger.info(f"[DRY RUN] Would delete: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
-            self.deleted_files.append(file_name)
-            self.bytes_freed += file_size
+            logger.info(f"[DRY RUN] Would move to trash: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
+            self.moved_to_trash.append(file_name)
+            self.bytes_moved_to_trash += file_size
             return True
         
-        logger.info(f"Deleting: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
+        logger.info(f"Moving to trash: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
         try:
             self.client.request("/files/delete", method="POST", data={"file_ids": file_id})
-            self.deleted_files.append(file_name)
-            self.bytes_freed += file_size
-            logger.info(f"Successfully deleted {file_name}, freed {self._format_size(file_size)}")
+            self.moved_to_trash.append(file_name)
+            self.bytes_moved_to_trash += file_size
+            logger.info(f"Successfully moved {file_name} to trash, freed {self._format_size(file_size)}")
             return True
         except Exception as e:
-            logger.error(f"Error deleting {file_name}: {e}")
+            logger.error(f"Error moving {file_name} to trash: {e}")
             return False
 
     def clean_up_space(self, account_info) -> int:
@@ -306,7 +328,7 @@ class PutioStorageManager:
             logger.warning("No deletable files found in the specified folders.")
             return 0
         
-        # Delete files/folders until we've freed enough space
+        # Move files/folders to trash until we've freed enough space
         freed_space = 0
         for container, files in deletable_items:
             if freed_space >= needed_space:
@@ -314,11 +336,11 @@ class PutioStorageManager:
                 
             if container:  # This is a folder with video
                 total_size = sum(f.size for f in files)
-                if self.delete_file(container.id, f"Folder: {container.name}", total_size):
+                if self.move_to_trash(container.id, f"Folder: {container.name}", total_size):
                     freed_space += total_size
             else:  # This is an individual video file
                 video_file = files[0]
-                if self.delete_file(video_file.id, video_file.name, video_file.size):
+                if self.move_to_trash(video_file.id, video_file.name, video_file.size):
                     freed_space += video_file.size
         
         logger.info(f"Freed {self._format_size(freed_space)} from files")
@@ -347,49 +369,58 @@ class PutioStorageManager:
             logger.error(f"Error getting trash files: {e}")
             return []
     
-    def permanently_delete_from_trash(self, file_id: int, file_name: str, file_size: int) -> bool:
+    def permanently_delete(self, file_id: int, file_name: str, file_size: int, from_trash: bool = True) -> bool:
         """
-        Permanently delete a file from trash
+        Permanently delete a file (from trash or directly)
         
         Args:
             file_id: ID of the file to delete
             file_name: Name of the file for logging
             file_size: Size of the file
+            from_trash: True if deleting from trash, False if deleting directly
             
         Returns:
             True if the file was deleted successfully
         """
         # Safety check: Never delete items with names matching deletable folder names
-        if file_name in DELETABLE_FOLDERS:
-            logger.error(f"SAFETY: Attempted to delete protected folder {file_name} from trash - BLOCKED")
+        base_name = file_name.split(':')[1].strip() if 'Folder:' in file_name else file_name
+        if base_name in DELETABLE_FOLDERS:
+            location = "trash" if from_trash else "folders"
+            logger.error(f"SAFETY: Attempted to delete protected folder {file_name} from {location} - BLOCKED")
             return False
             
         if self.dry_run:
-            logger.info(f"[DRY RUN] Would permanently delete from trash: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
-            self.deleted_files.append(f"Trash: {file_name}")
-            self.bytes_freed += file_size
+            location = "trash" if from_trash else "folders"
+            logger.info(f"[DRY RUN] Would permanently delete from {location}: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
+            self.permanently_deleted.append(f"{location.title()}: {file_name}")
+            self.bytes_permanently_deleted += file_size
             return True
         
-        logger.info(f"Permanently deleting from trash: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
+        location = "trash" if from_trash else "folders"
+        logger.info(f"Permanently deleting from {location}: {file_name} (ID: {file_id}, Size: {self._format_size(file_size)})")
         try:
-            self.client.Account.delete_from_trash(file_id)
-            self.deleted_files.append(f"Trash: {file_name}")
-            self.bytes_freed += file_size
-            logger.info(f"Successfully deleted {file_name} from trash, freed {self._format_size(file_size)}")
+            if from_trash:
+                self.client.Account.delete_from_trash(file_id)
+            else:
+                self.client.request("/files/delete", method="POST", data={"file_ids": file_id, "skip_trash": True})
+            
+            self.permanently_deleted.append(f"{location.title()}: {file_name}")
+            self.bytes_permanently_deleted += file_size
+            logger.info(f"Successfully deleted {file_name} from {location}, freed {self._format_size(file_size)}")
             return True
         except Exception as e:
-            logger.error(f"Error deleting {file_name} from trash: {e}")
+            logger.error(f"Error deleting {file_name} from {location}: {e}")
             return False
     
     def clean_up_trash(self, account_info) -> int:
         """
-        Clean trash to reach critical threshold
+        Permanently delete files from trash to reach critical threshold
         
         Args:
             account_info: Account information from get_account_info()
             
         Returns:
-            Bytes freed
+            Bytes permanently freed
         """
         avail_space = account_info['disk']['avail']
         trash_size = account_info.get('trash_size', 0)
@@ -397,9 +428,8 @@ class PutioStorageManager:
         # Need to reach critical threshold
         needed_space = self.gb_to_bytes(CRITICAL_THRESHOLD_GB) - avail_space
         
-        logger.info(f"Current available space: {self._format_size(avail_space)}")
-        logger.info(f"Current trash size: {self._format_size(trash_size)}")
-        logger.info(f"Need to free {self._format_size(needed_space)} from trash to reach critical threshold")
+        logger.info(f"Available space: {self._format_size(avail_space)}, Trash: {self._format_size(trash_size)}")
+        logger.info(f"Need to permanently delete {self._format_size(needed_space)} from trash")
         
         # Get files in trash
         trash_files = self.get_trash_files()
@@ -408,36 +438,68 @@ class PutioStorageManager:
             logger.warning("No files found in trash.")
             return 0
         
-        # Calculate the minimum date for files to be eligible for deletion
-        min_date = datetime.now() - timedelta(days=MIN_TRASH_AGE_DAYS)
-        
-        # Filter files that are old enough to delete
-        eligible_files = [
-            file for file in trash_files 
-            if 'created_at' in file and putiopy.strptime(file['created_at']) < min_date
-        ]
-        
-        logger.info(f"Found {len(eligible_files)} files in trash that are at least {MIN_TRASH_AGE_DAYS} day(s) old")
-        
-        if not eligible_files:
-            logger.warning("No eligible files found in trash to delete.")
-            return 0
-        
         # Sort files by creation date (oldest first)
-        eligible_files.sort(key=lambda x: putiopy.strptime(x['created_at']))
+        trash_files.sort(key=lambda x: putiopy.strptime(x['created_at']))
+        logger.info(f"Found {len(trash_files)} files in trash")
         
-        # Delete files until we've freed enough space
+        # Permanently delete oldest files until we've freed enough space
         freed_space = 0
-        for file in eligible_files:
+        for file in trash_files:
             if freed_space >= needed_space:
                 break
             
-            if self.permanently_delete_from_trash(file['id'], file['name'], file['size']):
+            if self.permanently_delete(file['id'], file['name'], file['size'], from_trash=True):
                 freed_space += file['size']
         
         logger.info(f"Freed {self._format_size(freed_space)} from trash")
         return freed_space
     
+    def permanently_delete_from_folders(self, account_info) -> int:
+        """
+        Permanently delete files from folders to meet critical threshold
+        
+        Args:
+            account_info: Account information from get_account_info()
+            
+        Returns:
+            Bytes permanently freed
+        """
+        # Calculate how much space needs to be freed to reach critical threshold
+        needed_space = self.gb_to_bytes(CRITICAL_THRESHOLD_GB) - account_info['disk']['avail']
+        logger.info(f"Need to permanently delete {self._format_size(needed_space)} from folders to reach critical threshold")
+        
+        # Find deletable folders
+        self.find_deletable_folders()
+        if not self.root_folder_ids:
+            logger.error("No deletable folders found, cannot permanently delete from folders.")
+            return 0
+        
+        # Collect files to permanently delete
+        deletable_items = self.collect_deletable_files()
+        logger.info(f"Found {len(deletable_items)} items that can be permanently deleted")
+        
+        if not deletable_items:
+            logger.warning("No deletable files found in the specified folders for permanent deletion.")
+            return 0
+        
+        # Permanently delete files/folders until we've freed enough space
+        freed_space = 0
+        for container, files in deletable_items:
+            if freed_space >= needed_space:
+                break
+                
+            if container:  # This is a folder with video
+                total_size = sum(f.size for f in files)
+                if self.permanently_delete(container.id, f"Folder: {container.name}", total_size, from_trash=False):
+                    freed_space += total_size
+            else:  # This is an individual video file
+                video_file = files[0]
+                if self.permanently_delete(video_file.id, video_file.name, video_file.size, from_trash=False):
+                    freed_space += video_file.size
+        
+        logger.info(f"Permanently freed {self._format_size(freed_space)} from folders")
+        return freed_space
+
     def run(self) -> None:
         """Run the storage manager to check and clean up space if needed"""
         try:
@@ -445,37 +507,52 @@ class PutioStorageManager:
             account_info = self.get_account_info()
             
             # Determine what cleanup is needed
-            need_trash, need_files = self.get_cleanup_status(account_info)
+            need_critical, need_comfort = self.get_cleanup_status(account_info)
             
-            if not need_trash and not need_files:
+            if not need_critical and not need_comfort:
                 logger.info("No cleanup needed - sufficient free space available")
                 return
             
-            # Handle critical situation - clean trash first
-            if need_trash:
-                logger.info(f"Critical: Available space below {CRITICAL_THRESHOLD_GB}GB, cleaning trash first")
+            # Handle critical threshold - permanently delete files first from trash, then from folders if needed
+            if need_critical:
+                logger.info(f"Critical threshold not met: {CRITICAL_THRESHOLD_GB}GB free space required")
+                
+                # First, try to clean trash
                 trash_freed = self.clean_up_trash(account_info)
                 
                 if not self.dry_run and trash_freed > 0:
-                    # Refresh account info
+                    # Refresh account info and recheck critical threshold
                     account_info = self.get_account_info()
-                    need_trash, need_files = self.get_cleanup_status(account_info)
+                    need_critical, need_comfort = self.get_cleanup_status(account_info)
+                
+                # If still below critical threshold, permanently delete from folders
+                if need_critical:
+                    logger.warning("Trash cleanup insufficient, permanently deleting from folders")
+                    self.permanently_delete_from_folders(account_info)
             
-            # Clean files if still needed
-            if need_files:
-                logger.info("Below comfort threshold (10GB), cleaning files")
+            # Handle comfort threshold - move files to trash
+            if need_comfort:
+                logger.info(f"Comfort threshold not met: keeping non-trash files below {COMFORT_THRESHOLD_GB}GB")
                 self.clean_up_space(account_info)
             
             # Print summary
-            if self.deleted_files:
-                logger.info(f"Deleted {len(self.deleted_files)} files/folders, freed {self._format_size(self.bytes_freed)}")
-                for file in self.deleted_files:
+            if self.permanently_deleted:
+                logger.info(f"Permanently deleted {len(self.permanently_deleted)} files/folders, "
+                           f"freed {self._format_size(self.bytes_permanently_deleted)}")
+                for file in self.permanently_deleted:
+                    logger.info(f"  - {file}")
+            
+            if self.moved_to_trash:
+                logger.info(f"Moved {len(self.moved_to_trash)} files/folders to trash, "
+                           f"freed {self._format_size(self.bytes_moved_to_trash)}")
+                for file in self.moved_to_trash:
                     logger.info(f"  - {file}")
             
             # Get final status if not in dry run
-            if not self.dry_run and self.deleted_files:
+            if not self.dry_run and (self.permanently_deleted or self.moved_to_trash):
                 final_account = self.get_account_info()
-                logger.info(f"Final free space: {self._format_size(final_account['disk']['avail'])}")
+                logger.info(f"Final status: {self._format_size(final_account['disk']['avail'])} available, "
+                           f"{self._format_size(final_account.get('trash_size', 0))} in trash")
         
         except Exception as e:
             logger.error(f"Error running storage manager: {e}", exc_info=True)
