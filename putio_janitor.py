@@ -268,19 +268,21 @@ class PutioStorageManager:
     def move_to_trash(self, file_id: int, file_name: str, file_size: int) -> bool:
         """
         Move a file or folder to trash on put.io
-        
+
         Args:
             file_id: ID of the file/folder to move to trash
             file_name: Name of the file/folder for logging
             file_size: Size of the file for tracking freed space
-            
+
         Returns:
             True if the file was moved to trash successfully
         """
-        # Safety check: Never delete folders with names matching deletable folder names
+        # Safety check: Never delete root-level folders (either in DELETABLE_FOLDERS or not)
+        # This check is more conservative to prevent accidental deletion of important folders
         base_name = file_name.split(':')[1].strip() if 'Folder:' in file_name else file_name
-        if base_name in DELETABLE_FOLDERS:
-            logger.error(f"SAFETY: Attempted to delete protected folder {file_name} - BLOCKED")
+        if 'Folder:' in file_name and base_name in DELETABLE_FOLDERS:
+            # Protect the root DELETABLE_FOLDERS themselves from being moved to trash
+            logger.error(f"SAFETY: Attempted to move root deletable folder {file_name} to trash - BLOCKED")
             return False
             
         if self.dry_run:
@@ -372,22 +374,32 @@ class PutioStorageManager:
     def permanently_delete(self, file_id: int, file_name: str, file_size: int, from_trash: bool = True) -> bool:
         """
         Permanently delete a file (from trash or directly)
-        
+
         Args:
             file_id: ID of the file to delete
             file_name: Name of the file for logging
             file_size: Size of the file
             from_trash: True if deleting from trash, False if deleting directly
-            
+
         Returns:
             True if the file was deleted successfully
         """
-        # Safety check: Never delete items with names matching deletable folder names
+        # Safety check: Protect root-level folders from accidental deletion
         base_name = file_name.split(':')[1].strip() if 'Folder:' in file_name else file_name
-        if base_name in DELETABLE_FOLDERS:
-            location = "trash" if from_trash else "folders"
-            logger.error(f"SAFETY: Attempted to delete protected folder {file_name} from {location} - BLOCKED")
-            return False
+        is_folder = 'Folder:' in file_name
+
+        if is_folder:
+            if from_trash:
+                # When deleting from trash, protect ALL root-level folders
+                # We can't tell origin, so we protect anything that looks like it could be a root folder
+                # This includes both folders IN deletable list and NOT in deletable list
+                logger.error(f"SAFETY: Attempted to permanently delete folder {file_name} from trash - BLOCKED (folders in trash are not auto-deleted for safety)")
+                return False
+            else:
+                # When deleting from folders, only protect the root DELETABLE_FOLDERS themselves
+                if base_name in DELETABLE_FOLDERS:
+                    logger.error(f"SAFETY: Attempted to permanently delete root folder {file_name} - BLOCKED")
+                    return False
             
         if self.dry_run:
             location = "trash" if from_trash else "folders"
@@ -447,7 +459,15 @@ class PutioStorageManager:
         for file in trash_files:
             if freed_space >= needed_space:
                 break
-            
+
+            # Safety check: Skip folders in trash to prevent accidental deletion of root folders
+            file_type = file.get('file_type', file.get('content_type', ''))
+            is_folder = file_type in ['FOLDER', 'application/x-directory']
+
+            if is_folder:
+                logger.info(f"Skipping folder in trash: {file['name']} (folders are protected from auto-deletion)")
+                continue
+
             if self.permanently_delete(file['id'], file['name'], file['size'], from_trash=True):
                 freed_space += file['size']
         
