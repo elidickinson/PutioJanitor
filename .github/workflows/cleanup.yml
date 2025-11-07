@@ -46,58 +46,22 @@ jobs:
           if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
             export PUTIO_DRY_RUN=true
           fi
-          
+
           # Run script and capture output
-          OUTPUT=$(python putio_janitor.py)
-          
-          # Extract key information from output
-          DELETED_FILES=$(echo "$OUTPUT" | grep " -   - " || echo "")
-          SUMMARY_LINE=$(echo "$OUTPUT" | grep "Deleted [0-9]* files/folders, freed" || echo "")
-          NO_CLEANUP=$(echo "$OUTPUT" | grep "No cleanup needed" || echo "")
-          
-          # Count deleted files
-          if [ -n "$DELETED_FILES" ]; then
-            FILES_COUNT=$(echo "$DELETED_FILES" | wc -l)
-          else
-            FILES_COUNT=0
-          fi
-          
-          # Create a simple summary
-          echo "### Storage Cleanup Summary" > $GITHUB_STEP_SUMMARY
+          python putio_janitor.py 2>&1 | tee output.log
+          OUTPUT=$(cat output.log)
+
+          # Create summary header
+          echo "### 🧹 Put.io Storage Cleanup" > $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Run Type:** ${{ github.event.inputs.dry_run && 'Dry Run' || 'Production' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Type:** ${{ github.event.inputs.dry_run == 'true' && 'Dry Run 🧪' || 'Production 🚀' }}" >> $GITHUB_STEP_SUMMARY
           echo "**Date:** $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -n "$NO_CLEANUP" ]; then
-            echo "✅ No cleanup needed - sufficient free space available" >> $GITHUB_STEP_SUMMARY
-          elif [ "$FILES_COUNT" -gt 0 ]; then
-            echo "**Files Deleted:** $FILES_COUNT" >> $GITHUB_STEP_SUMMARY
-            if [ -n "$SUMMARY_LINE" ]; then
-              echo "**Result:** $SUMMARY_LINE" >> $GITHUB_STEP_SUMMARY
-            fi
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Deleted Files:**" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "$DELETED_FILES" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ Script ran but no files were processed" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Set outputs for job summary
-          if [ "$FILES_COUNT" -gt 0 ]; then
-            echo "deleted_files=true" >> $GITHUB_OUTPUT
-          else
-            echo "deleted_files=false" >> $GITHUB_OUTPUT
-          fi
-          
-          # Show full script output for debugging
+          echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Script Output:**" >> $GITHUB_STEP_SUMMARY
+
+          # Filter and display the relevant output (remove timestamps and log levels for cleaner display)
+          echo "### Output" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "$OUTPUT" >> $GITHUB_STEP_SUMMARY
+          echo "$OUTPUT" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} - (INFO|WARNING|ERROR|DEBUG) - //' >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          
-          # Exit with original output
-          echo "$OUTPUT"
