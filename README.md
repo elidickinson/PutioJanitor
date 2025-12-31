@@ -4,11 +4,10 @@ A Python script that automatically manages storage on put.io using a dual-thresh
 
 ## Features
 
-- Simple GitHub Actions deployment
+- Runs on a schedule on your own Github account for free.
 
 - **Critical Threshold**: Ensures minimum free space by permanently deleting files
 - **Comfort Threshold**: Keeps non-trash files below target levels by moving to trash
-- Configurable via environment variables - no code changes needed
 - Limited to certain files (default: "chill.institute" and "putfirst")
 - Deletes oldest files first, based on creation date
 - Treats subfolders containing movie files as complete units (deletes entire folder)
