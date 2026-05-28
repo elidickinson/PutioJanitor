@@ -2,8 +2,6 @@
 name: Put.io Janitor
 
 on:
-  schedule:
-    - cron: '0 10 * * *'  # Run daily at 5:00 AM Eastern Time (10:00 UTC)
   workflow_dispatch:
     inputs:
       dry_run:
